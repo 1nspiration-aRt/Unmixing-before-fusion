@@ -1,8 +1,8 @@
-Introduction
+# Introduction
 This is the implementation of article: Unmixing Before Fusion: A Generalized Paradigm for Multi-Source-based Hyperspectral Image Synthesis
 
-Usage
-Data
+# Usage
+## Data
 All the selected datasets are open-source. The experimental includes the remote sensing scenario and natural scenario. 
 
 For the remote sensing scenario, the selected hyperspectral dataset includes the Chikusei and HSRS-SC dataset. The RGB dataset includes the AID and the NWPU dataset. 
@@ -11,7 +11,7 @@ For the natural sceneario, the selected hyperspectral dataset includes the ARAD 
 
 Before training the network, please download the dataset, crop the images and save as the .Mat file. It is recommended that the spatial size should not be larger than 256 x 256. The experimental workflow is as follows. 
 
-1: Train the hyperspectral unmixing network and infer the abundance maps from external RGB dataset.
+# 1: Train the hyperspectral unmixing network and infer the abundance maps from external RGB dataset.
 Input: Three channels images obtained by the band selection from original hyperspectral images.
 
 Output: The original hyperspectral images.
@@ -28,7 +28,7 @@ python Unmixing.py infer
 
 After that, we can obtain the inferred abundance from multi-source datasets which include rich and realistic spatial distribution feature.
 
-2: Train the Diffusion model and synthesize abundance maps by the trained Diffusion model.
+# 2: Train the Diffusion model and synthesize abundance maps by the trained Diffusion model.
 Input: Inferred abundance maps by Step 1.
 
 Output: Synthetic abundance maps.
@@ -43,7 +43,7 @@ python Diffusion.py -p val -c config/Chikusei_256_DDPM.json
 
 After that, we can obtain the synthesized abundance in ./experiments/ddpm/\*/mat_results/.
 
-3: HSI synthesis.
+# 3: HSI synthesis.
 Input: Synthetic abundance maps by Step 2.
 
 Output: Synthetic HSIs.
