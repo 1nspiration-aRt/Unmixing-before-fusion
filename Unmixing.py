@@ -237,7 +237,7 @@ def infer(args):
     model_name = os.path.join(args.ckpt_dir, args.model_title + "_" + args.dataset_name  +'_latest.pth')
     print(model_name)
     ckpt = torch.load(model_name)["model"]
-    net = UnmixingAE(n_blocks=args.n_blocks, res_scale = 0.1, input_channels=128,  conv=default_conv)
+    net = UnmixingAE(n_blocks=args.n_blocks, res_scale = 0.1, input_channels=colors,  conv=default_conv)
     net.load_state_dict(ckpt)
     net.eval().cuda()
     device = torch.device("cuda" if args.cuda else "cpu")
