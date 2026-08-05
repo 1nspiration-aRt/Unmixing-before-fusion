@@ -3,11 +3,10 @@ import math
 import numpy as np
 import cv2
 from torchvision.utils import make_grid
-from skimage.measure import compare_psnr, compare_ssim
+#Old name was left unused
+from skimage.metrics import structural_similarity as compare_psnr
+from  skimage.metrics import peak_signal_noise_ratio as compare_ssim
 import scipy.io as sio
-
-
-
 
 
 
