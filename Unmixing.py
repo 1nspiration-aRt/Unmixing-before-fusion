@@ -231,6 +231,11 @@ def infer(args):
     if not os.path.exists(result_path):
         os.makedirs(result_path)
 
+    if args.dataset_name=='Chikusei':
+        colors = 59
+    else:
+        colors = 31
+
     inferdata_set = HSIDataset(image_dir=inferdata_path, augment=False)
     inferdata_loader = DataLoader(inferdata_set, batch_size=1, num_workers=4, shuffle=False)
 
