@@ -1,0 +1,22 @@
+Traceback (most recent call last):
+  File "E:\Hw9999\PythonProject\Unmixing-before-fusion\Unmixing.py", line 308, in <module>
+    main()
+  File "E:\Hw9999\PythonProject\Unmixing-before-fusion\Unmixing.py", line 79, in main
+    train(args)
+  File "E:\Hw9999\PythonProject\Unmixing-before-fusion\Unmixing.py", line 161, in train
+    _, y, decoder_weight = net(rgbdata)
+  File "C:\Users\ymc\.conda\envs\unmixing-before-fusion\lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "C:\Users\ymc\.conda\envs\unmixing-before-fusion\lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "E:\Hw9999\PythonProject\Unmixing-before-fusion\unmixingmodel\unmixingAE.py", line 40, in forward
+    unx = self.layerup1(x)
+  File "C:\Users\ymc\.conda\envs\unmixing-before-fusion\lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "C:\Users\ymc\.conda\envs\unmixing-before-fusion\lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "C:\Users\ymc\.conda\envs\unmixing-before-fusion\lib\site-packages\torch\nn\modules\conv.py", line 565, in forward
+    return self._conv_forward(input, self.weight, self.bias)
+  File "C:\Users\ymc\.conda\envs\unmixing-before-fusion\lib\site-packages\torch\nn\modules\conv.py", line 560, in _conv_forward
+    return F.conv2d(
+RuntimeError: CUDNN_BACKEND_TENSOR_DESCRIPTOR cudnnFinalize failedptrDesc->finalize() cudnn_status: CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH
