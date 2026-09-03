@@ -36,6 +36,32 @@ def load_model_state(model, state_dict):
     target = model.module if isinstance(model, torch.nn.DataParallel) else model
     target.load_state_dict(state_dict)
 
+
+def forward_with_cudnn_fallback(model, inputs):
+    """Run a forward pass and bypass cuDNN only for a sublibrary mismatch.
+
+    cuDNN 9 is split into multiple DLLs.  A minimal convolution may succeed
+    while a different convolution shape loads another, incompatible sublibrary.
+    The fallback keeps CUDA tensors and uses PyTorch's native CUDA convolution;
+    unrelated runtime errors are deliberately not intercepted.
+    """
+
+    try:
+        return model(inputs)
+    except RuntimeError as exc:
+        mismatch = "CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH"
+        cudnn_enabled = bool(getattr(torch.backends.cudnn, "enabled", False))
+        if not inputs.is_cuda or not cudnn_enabled or mismatch not in str(exc):
+            raise
+
+        torch.backends.cudnn.enabled = False
+        print(
+            "WARNING: cuDNN sublibrary versions are inconsistent. "
+            "cuDNN has been disabled and this forward pass will be retried "
+            "with PyTorch's native CUDA convolution. Training may be slower."
+        )
+        return model(inputs)
+
 def main():
     # parsers
     main_parser = argparse.ArgumentParser(description="parser for AE network")
@@ -158,7 +184,7 @@ def train(args):
             gt = gt.to(device)
             rgbdata = rgbdata.to(device)
             optimizer.zero_grad()       
-            _, y, decoder_weight = net(rgbdata)
+            _, y, decoder_weight = forward_with_cudnn_fallback(net, rgbdata)
 
             charb_loss = charbloss(y,gt)
             sad_loss = 0.1 * SADLoss(y,gt)
@@ -197,7 +223,7 @@ def train(args):
         for i, (gt, rgbdata) in enumerate(test_loader):
             gt = gt.to(device)
             rgbdata = rgbdata.to(device)
-            _, y, decoder_weight = net(rgbdata)
+            _, y, decoder_weight = forward_with_cudnn_fallback(net, rgbdata)
             y, gt = y.squeeze().cpu().numpy().transpose(1, 2, 0), gt.squeeze().cpu().numpy().transpose(1, 2, 0)
             y = y[:gt.shape[0],:gt.shape[1],:] 
             if i==0:
@@ -241,7 +267,7 @@ def validate(args, loader, model, criterion):
         for _, (gt, rgbdata) in enumerate(loader):
             gt = gt.to(device)
             rgbdata = rgbdata.to(device)
-            _, y, _ = model(rgbdata)
+            _, y, _ = forward_with_cudnn_fallback(model, rgbdata)
             loss = criterion(y, gt)
             epoch_meter.add(loss.item())
         mesg = "===> {}\tEpoch evaluation Complete: Avg. Loss: {:.6f}".format(time.ctime(), epoch_meter.value()[0])
@@ -280,7 +306,7 @@ def infer(args):
         # loading model
         for i, rgbdata in enumerate(inferdata_loader):
             rgbdata = rgbdata.to(device)
-            en_result, y, _ = net(rgbdata)
+            en_result, y, _ = forward_with_cudnn_fallback(net, rgbdata)
             en_result = en_result.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
             rgbdata = rgbdata.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
             y = y.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
