@@ -1,20 +1,20 @@
 {
     "name": "Chikusei",
-    "phase": "train", // train or val
+    "phase": "train",
     "gpu_ids": [
         1
     ],
-    "path": { //set the path
+    "path": {
         "log": "logs",
         "tb_logger": "tb_logger",
         "results": "results",
         "mat_results": "mat_results",
         "checkpoint": "checkpoint",
-        "resume_state": null // for validation, modify it to "./experiments/ddpm/*/checkpoints/I***_E***"
+        "resume_state": null
     },
     "datasets": {
         "train": {
-            "data_len": -1 // -1 represents all data used in train
+            "data_len": -1
         },
         "val": {
             "data_len": 50
@@ -40,7 +40,7 @@
             "res_blocks": 2,
             "dropout": 0.2
         },
-        "beta_schedule": { // use munual beta_schedule for acceleration
+        "beta_schedule": {
             "train": {
                 "schedule": "linear",
                 "n_timestep": 2000,
@@ -56,8 +56,8 @@
         },
         "diffusion": {
             "image_size": 256,
-            "channels": 5, //sample channel
-            "conditional": false // unconditional generation
+            "channels": 5,
+            "conditional": false
         }
     },
     "train": {
@@ -69,7 +69,7 @@
             "type": "adam",
             "lr": 1e-4
         },
-        "ema_scheduler": { // not used now
+        "ema_scheduler": {
             "step_start_ema": 5000,
             "update_ema_every": 1,
             "ema_decay": 0.9999
