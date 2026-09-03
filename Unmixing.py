@@ -16,13 +16,27 @@ from tensorboardX import SummaryWriter
 from unmixingmodel.unmixingAE import UnmixingAE
 from core import utils
 from core.common import *
-from core.loaddata import HSIDataset
+from core.loaddata import HSIDataset, RGBDataset
 from core.loss import reconstruction_SADloss,CharbonnierLoss,TVLossEndmembers
 from core.metrics import quality_assessment
 
 # global settings
 resume = False
 log_interval = 50
+
+
+def output_channels(dataset_name):
+    return 59 if dataset_name == "Chikusei" else 31
+
+
+def load_model_state(model, state_dict):
+    """Load checkpoints saved with or without DataParallel prefixes."""
+    state_dict = {
+        key[7:] if key.startswith("module.") else key: value
+        for key, value in state_dict.items()
+    }
+    target = model.module if isinstance(model, torch.nn.DataParallel) else model
+    target.load_state_dict(state_dict)
 
 def main():
     # parsers
@@ -43,12 +57,12 @@ def main():
     train_parser.add_argument("--weight_decay", type=float, default=0, help="weight decay, default set to 0")
     train_parser.add_argument("--save_dir", type=str, default="./experiments/unmixing/ckpts/",
                               help="directory for saving trained models, default is trained_model folder")
-    train_parser.add_argument("--gpus", type=str, default="1", help="gpu ids (default: 7)")
+    train_parser.add_argument("--gpus", type=str, default="0", help="gpu ids (default: 0)")
 
     infer_parser = subparsers.add_parser("infer", help="parser for inferring arguments")
     infer_parser.add_argument("--cuda", type=int, required=False,default=1,
                              help="set it to 1 for running on GPU, 0 for CPU")
-    infer_parser.add_argument("--gpus", type=str, default="0", help="gpu ids (default: 7)")
+    infer_parser.add_argument("--gpus", type=str, default="0", help="gpu ids (default: 0)")
     infer_parser.add_argument("--n_blocks", type=int, default=3, help="n_blocks, default set to 6")
     infer_parser.add_argument("--ckpt_dir", type=str, default="./experiments/unmixing/ckpts/", help="dataset_name, default set to dataset_name")
     infer_parser.add_argument("--dataset_name", type=str, default="Chikusei", help="dataset_name, default set to dataset_name")
@@ -82,36 +96,49 @@ def train(args):
     eval_path     = './dataset/evals/'
     test_data_dir = './dataset/tests/'
 
-
-
-    train_set = HSIDataset(image_dir=train_path, augment=False)
-    eval_set = HSIDataset(image_dir=eval_path, augment=False)
-    test_set = HSIDataset(test_data_dir)
+    colors = output_channels(args.dataset_name)
+    train_set = HSIDataset(
+        image_dir=train_path,
+        augment=False,
+        output_channels=colors
+    )
+    eval_set = HSIDataset(
+        image_dir=eval_path,
+        augment=False,
+        output_channels=colors
+    )
+    test_set = HSIDataset(
+        image_dir=test_data_dir,
+        augment=False,
+        output_channels=colors
+    )
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=8, shuffle=True)
     eval_loader = DataLoader(eval_set, batch_size=args.batch_size, num_workers=4, shuffle=False)
     test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
 
-    if args.dataset_name=='Chikusei':
-        colors = 59
-    else:
-        colors = 31    
-
     print('===> Building model')
-    net = UnmixingAE(n_blocks=args.n_blocks, res_scale = 0.1, input_channels = colors, conv=default_conv)
+    net = UnmixingAE(
+        n_blocks=args.n_blocks,
+        res_scale=0.1,
+        input_channels=3,
+        output_channels=colors,
+        conv=default_conv
+    )
     model_name = args.model_title + "_" + args.dataset_name +'_latest.pth'
+    model_path = os.path.join(args.save_dir, model_name)
     
     if torch.cuda.device_count() > 1:
         print("===> Let's use", torch.cuda.device_count(), "GPUs.")
         net = torch.nn.DataParallel(net)
     start_epoch = 0
     if resume:
-        if os.path.isfile(model_name):
-            print("=> loading checkpoint '{}'".format(model_name))
-            checkpoint = torch.load(model_name)
+        if os.path.isfile(model_path):
+            print("=> loading checkpoint '{}'".format(model_path))
+            checkpoint = torch.load(model_path, map_location=device)
             start_epoch = checkpoint["epoch"]
-            net.load_state_dict(checkpoint["model"].state_dict())
+            load_model_state(net, checkpoint["model"])
         else:
-            print("=> no checkpoint found at '{}'".format(model_name))
+            print("=> no checkpoint found at '{}'".format(model_path))
     net.to(device).train()
 
     # loss functions to choose
@@ -132,10 +159,11 @@ def train(args):
         adjust_learning_rate(args.learning_rate, optimizer, e+1)
         epoch_meter.reset()
         print("Start epoch {}, learning rate = {}".format(e + 1, optimizer.param_groups[0]["lr"]))
-        for iteration, (gt) in enumerate(train_loader):
+        for iteration, (gt, rgbdata) in enumerate(train_loader):
             gt = gt.to(device)
+            rgbdata = rgbdata.to(device)
             optimizer.zero_grad()       
-            _, y, decoder_weight = net(gt)
+            _, y, decoder_weight = net(rgbdata)
 
             charb_loss = charbloss(y,gt)
             sad_loss = 0.1 * SADLoss(y,gt)
@@ -150,7 +178,7 @@ def train(args):
                 print("===> {} B{} \tEpoch[{}]({}/{}): Loss: {:.6f} charb_loss: {:.6f} SADLoss: {:.6f} TVLoss: {:.6f}".format(time.ctime(), args.n_blocks, e+1, iteration + 1,
                                                                    len(train_loader), loss.item(),charb_loss.item(), sad_loss.item(), tv_endmembers.item() ))
                 n_iter = e * len(train_loader) + iteration + 1
-                writer.add_scalar('scalar/train_loss', loss, n_iter)
+                writer.add_scalar('scalar/train_loss', loss.item(), n_iter)
 
         print("===> {}\tEpoch {} Training Complete: Avg. Loss: {:.6f}".format(time.ctime(), e+1, epoch_meter.value()[0]))
         # run validation set every epoch
@@ -167,13 +195,14 @@ def train(args):
 
     ## Save the testing results
     print('===> Start testing')
-    net.eval().cuda()
+    net.to(device).eval()
     with torch.no_grad():
         output = []
         test_number = 0
-        for i, (gt) in enumerate(test_loader):
+        for i, (gt, rgbdata) in enumerate(test_loader):
             gt = gt.to(device)
-            _, y, decoder_weight = net(gt)
+            rgbdata = rgbdata.to(device)
+            _, y, decoder_weight = net(rgbdata)
             y, gt = y.squeeze().cpu().numpy().transpose(1, 2, 0), gt.squeeze().cpu().numpy().transpose(1, 2, 0)
             y = y[:gt.shape[0],:gt.shape[1],:] 
             if i==0:
@@ -214,9 +243,10 @@ def validate(args, loader, model, criterion):
     epoch_meter = meter.AverageValueMeter()
     epoch_meter.reset()
     with torch.no_grad():
-        for _, (gt) in enumerate(loader):
-            gt = gt.to(device)          
-            _, y, _ = model(gt)
+        for _, (gt, rgbdata) in enumerate(loader):
+            gt = gt.to(device)
+            rgbdata = rgbdata.to(device)
+            _, y, _ = model(rgbdata)
             loss = criterion(y, gt)
             epoch_meter.add(loss.item())
         mesg = "===> {}\tEpoch evaluation Complete: Avg. Loss: {:.6f}".format(time.ctime(), epoch_meter.value()[0])
@@ -231,34 +261,36 @@ def infer(args):
     if not os.path.exists(result_path):
         os.makedirs(result_path)
 
-    if args.dataset_name=='Chikusei':
-        colors = 59
-    else:
-        colors = 31
-
-    inferdata_set = HSIDataset(image_dir=inferdata_path, augment=False)
+    colors = output_channels(args.dataset_name)
+    inferdata_set = RGBDataset(image_dir=inferdata_path, augment=False)
     inferdata_loader = DataLoader(inferdata_set, batch_size=1, num_workers=4, shuffle=False)
 
     model_name = os.path.join(args.ckpt_dir, args.model_title + "_" + args.dataset_name  +'_latest.pth')
     print(model_name)
-    ckpt = torch.load(model_name)["model"]
-    net = UnmixingAE(n_blocks=args.n_blocks, res_scale = 0.1, input_channels=colors,  conv=default_conv)
-    net.load_state_dict(ckpt)
-    net.eval().cuda()
     device = torch.device("cuda" if args.cuda else "cpu")
+    ckpt = torch.load(model_name, map_location=device)["model"]
+    net = UnmixingAE(
+        n_blocks=args.n_blocks,
+        res_scale=0.1,
+        input_channels=3,
+        output_channels=colors,
+        conv=default_conv
+    )
+    load_model_state(net, ckpt)
+    net.to(device).eval()
 
     print('===> Start inferring')
     with torch.no_grad():
         # loading model
-        for i, (gt) in enumerate(inferdata_loader):
-            gt =  gt.to(device)
-            en_result, y, _ = net(gt)
+        for i, rgbdata in enumerate(inferdata_loader):
+            rgbdata = rgbdata.to(device)
+            en_result, y, _ = net(rgbdata)
             en_result = en_result.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
-            gt = gt.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
+            rgbdata = rgbdata.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
             y = y.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
             filename = str(i).zfill(4)
-            save_dir = result_path + filename + '.mat'
-            sio.savemat(save_dir,{'Abu':en_result, 'GT':gt, 'Y':y})
+            save_dir = os.path.join(result_path, filename + '.mat')
+            sio.savemat(save_dir,{'Abu':en_result, 'GT':rgbdata, 'Y':y})
 
             if i % 100 == 0:
                 print(i)
@@ -270,7 +302,8 @@ def save_checkpoint(args, model, epoch, ckpt_model_filename):
     if not os.path.exists(checkpoint_model_dir):
         os.makedirs(checkpoint_model_dir)
     ckpt_model_path = os.path.join(checkpoint_model_dir, ckpt_model_filename)
-    state = {"epoch": epoch, "model": model.state_dict()}
+    model_to_save = model.module if isinstance(model, torch.nn.DataParallel) else model
+    state = {"epoch": epoch, "model": model_to_save.state_dict()}
     torch.save(state, ckpt_model_path)
     model.to(device).train()
     print("Checkpoint saved to {}".format(ckpt_model_path))

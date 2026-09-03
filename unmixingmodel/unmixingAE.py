@@ -5,22 +5,35 @@ import numpy as np
 from core.common import *
 
 class UnmixingAE(nn.Module):
-    def __init__(self, n_blocks, res_scale, input_channels, conv= default_conv):
+    def __init__(
+        self,
+        n_blocks,
+        res_scale,
+        input_channels=3,
+        output_channels=59,
+        conv=default_conv
+    ):
         super(UnmixingAE,self).__init__()
         kernel_size = 3
         act = nn.ReLU(True)
         self.input_channels = input_channels
+        self.output_channels = output_channels
 
-        self.layerup1 = conv(3, 32,kernel_size)
+        self.layerup1 = conv(input_channels, 32, kernel_size)
         self.layerup2 = SSPN(32, n_blocks,64,act,res_scale)
 
         self.layerup3 = SSPN(64, n_blocks,128,act,res_scale)
         self.layer1 = SSPN(128, n_blocks,96,act,res_scale)
         self.layer2 = SSPN(96,n_blocks,48, act,res_scale)
         self.layer3 = SSPN(48,n_blocks,5, act,res_scale)	
-        self.encodelayer = nn.Sequential(nn.Softmax())
+        self.encodelayer = nn.Sequential(nn.Softmax(dim=1))
 
-        self.decoderlayer = nn.Conv2d(in_channels=5, out_channels=self.input_channels,kernel_size=(1,1),bias=False)
+        self.decoderlayer = nn.Conv2d(
+            in_channels=5,
+            out_channels=self.output_channels,
+            kernel_size=(1,1),
+            bias=False
+        )
 
 	
     def forward(self, x):
