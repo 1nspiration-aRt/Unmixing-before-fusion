@@ -1,12 +1,8 @@
-import os
-import math
 import numpy as np
 import cv2
-from torchvision.utils import make_grid
-#Old name was left unused
-from skimage.metrics import structural_similarity as compare_ssim
-from skimage.metrics import peak_signal_noise_ratio as compare_psnr
 import scipy.io as sio
+
+from core.metrics import compare_mpsnr, compare_mssim, compare_sam
 
 
 
@@ -18,54 +14,44 @@ def tensor2img(tensor):
 
 
 def norm(x):
-    x = (x - x.min())/(x.max()-x.min())
-    return x * 255.0
+    x = np.asarray(x, dtype=np.float32)
+    value_range = float(x.max() - x.min())
+    if value_range <= np.finfo(np.float32).eps:
+        return np.zeros_like(x, dtype=np.uint8)
+    x = (x - x.min()) / value_range
+    return np.clip(x * 255.0, 0, 255).astype(np.uint8)
 
 
-def tensor2rgb(tensor):
+def tensor2rgb(tensor, rgb_bands=None):
     min_max=(-1, 1)
     tensor = tensor.squeeze().float().cpu().clamp_(*min_max)  # clamp
-    tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())  # to range [0,1]
     tensor = tensor.numpy().transpose(1, 2, 0)
-    imageR = tensor[:,:,69]
-    # imageR = norm(imageR)
-    imageG = tensor[:,:,99]
-    # imageG = norm(imageG)
-    imageB = tensor[:,:,35]
-    # imageB = norm(imageB)
-    image = cv2.merge([imageR,imageG,imageB])
-    image = norm(image)
-    return image
+    channels = tensor.shape[2]
+    if rgb_bands is None:
+        rgb_bands = tuple(np.linspace(channels - 1, 0, 3, dtype=int))
+    if len(rgb_bands) != 3 or min(rgb_bands) < 0 or max(rgb_bands) >= channels:
+        raise ValueError(f"rgb_bands {rgb_bands} exceed {channels} channels")
+    red, green, blue = (tensor[:, :, index] for index in rgb_bands)
+    return norm(cv2.merge([blue, green, red]))
 
 def tensor2rgb_band8(tensor):
     min_max=(-1, 1)
     tensor = tensor.squeeze().float().cpu().clamp_(*min_max)  # clamp
-    tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())  # to range [0,1]
     tensor = tensor.numpy().transpose(1, 2, 0)
-    imageR = tensor[:,:,0]
-    # imageR = norm(imageR)
-    imageG = tensor[:,:,1]
-    # imageG = norm(imageG)
-    imageB = tensor[:,:,2]
-    # imageB = norm(imageB)
-    image = cv2.merge([imageR,imageG,imageB])
-    image = norm(image)
-    return image
+    if tensor.shape[2] < 3:
+        raise ValueError("At least three channels are required for RGB preview")
+    red, green, blue = tensor[:, :, 0], tensor[:, :, 1], tensor[:, :, 2]
+    return norm(cv2.merge([blue, green, red]))
 
 
 
-def calculate_psnr(x_true, x_pred):
+def calculate_psnr(x_true, x_pred, data_range=1.0):
     """
     :param x_true: Input image must have three dimension (H, W, C)
     :param x_pred:
     :return:
     """
-    x_true, x_pred = x_true.astype(np.float32), x_pred.astype(np.float32)
-    channels = x_true.shape[2]
-    total_psnr = [compare_psnr(im_test=x_pred[:, :, k],im_true=x_true[:, :, k])
-                  for k in range(channels)]
-
-    return np.mean(total_psnr)
+    return compare_mpsnr(x_true, x_pred, data_range=data_range)
 
 
 def calculate_sam(x_true, x_pred):
@@ -74,23 +60,11 @@ def calculate_sam(x_true, x_pred):
     :param x_pred: 高光谱图像：格式：(H, W, C)
     :return: 计算原始高光谱数据与重构高光谱数据的光谱角相似度
     """
-    num = 0
-    sum_sam = 0
-    x_true, x_pred = x_true.astype(np.float32), x_pred.astype(np.float32)
-    for x in range(x_true.shape[0]):
-        for y in range(x_true.shape[1]):
-            tmp_pred = x_pred[x, y].ravel()
-            tmp_true = x_true[x, y].ravel()
-            if np.linalg.norm(tmp_true) != 0 and np.linalg.norm(tmp_pred) != 0:
-                sum_sam += np.arccos(
-                    np.inner(tmp_pred, tmp_true) / (np.linalg.norm(tmp_true) * np.linalg.norm(tmp_pred)))
-                num += 1
-    sam_deg = (sum_sam / num) * 180 / np.pi
-    return sam_deg
+    return compare_sam(x_true, x_pred)
 
 
 
-def calculate_ssim(x_true, x_pred):
+def calculate_ssim(x_true, x_pred, data_range=1.0):
     """
 
     :param x_true:
@@ -99,14 +73,12 @@ def calculate_ssim(x_true, x_pred):
     :param multidimension:
     :return:
     """
-    mssim = [compare_ssim(X=x_pred[:, :, i],Y=x_true[:, :, i])
-            for i in range(x_true.shape[2])]
-
-    return np.mean(mssim)
+    return compare_mssim(x_true, x_pred, data_range=data_range)
 
 def save_img(img, img_path, mode='RGB'):
-    # cv2.imwrite(img_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-    cv2.imwrite(img_path, img)
+    cv2_image = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if mode == 'RGB' else img
+    if not cv2.imwrite(img_path, cv2_image):
+        raise OSError(f"Failed to write image: {img_path}")
     
 def save_mat(mat, mat_path):
     # cv2.imwrite(img_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))

@@ -1,4 +1,3 @@
-import os
 import torch
 import torch.nn as nn
 
@@ -6,8 +5,8 @@ import torch.nn as nn
 class BaseModel():
     def __init__(self, opt):
         self.opt = opt
-        self.device = torch.device(
-            'cuda' if opt['gpu_ids'] is not None else 'cpu')
+        use_cuda = bool(opt['gpu_ids']) and torch.cuda.is_available()
+        self.device = torch.device('cuda' if use_cuda else 'cpu')
         self.begin_step = 0
         self.begin_epoch = 0
 
@@ -32,9 +31,7 @@ class BaseModel():
                 if item is not None:
                     x[key] = item.to(self.device)
         elif isinstance(x, list):
-            for item in x:
-                if item is not None:
-                    item = item.to(self.device)
+            x = [item.to(self.device) if item is not None else None for item in x]
         else:
             x = x.to(self.device)
         return x

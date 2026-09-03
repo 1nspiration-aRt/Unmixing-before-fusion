@@ -1,13 +1,11 @@
 import argparse
 import os
-import sys
 import time
 import numpy as np
 import json
 import scipy.io as sio
 
 import torch
-import torch.backends.cudnn as cudnn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torchnet import meter
@@ -51,7 +49,7 @@ def main():
     train_parser.add_argument("--n_blocks", type=int, default=3, help="n_blocks, default set to 6")
     train_parser.add_argument("--dataset_name", type=str, default="Chikusei", help="dataset_name, default set to dataset_name")
     train_parser.add_argument("--model_title", type=str, default="UnmixingAE", help="model_title, default set to model_title")
-    train_parser.add_argument("--seed", type=int, default=3000, help="start seed for model")
+    train_parser.add_argument("--seed", type=int, default=utils.DEFAULT_SEED, help="fixed random seed")
     train_parser.add_argument("--learning_rate", type=float, default=2e-4,
                               help="learning rate, default set to 1e-4")
     train_parser.add_argument("--weight_decay", type=float, default=0, help="weight decay, default set to 0")
@@ -67,16 +65,16 @@ def main():
     infer_parser.add_argument("--ckpt_dir", type=str, default="./experiments/unmixing/ckpts/", help="dataset_name, default set to dataset_name")
     infer_parser.add_argument("--dataset_name", type=str, default="Chikusei", help="dataset_name, default set to dataset_name")
     infer_parser.add_argument("--model_title", type=str, default="UnmixingAE", help="model_title, default set to model_title")
+    infer_parser.add_argument("--seed", type=int, default=utils.DEFAULT_SEED, help="fixed random seed")
 
     args = main_parser.parse_args()
+    if args.subcommand is None:
+        main_parser.error("specify either train or infer")
     print(args.gpus)
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpus
-    if args.subcommand is None:
-        print("ERROR: specify either train or test")
-        sys.exit(1)
     if args.cuda and not torch.cuda.is_available():
-        print("ERROR: cuda is not available, try running on CPU")
-        sys.exit(1)
+        print("CUDA is unavailable; falling back to CPU.")
+        args.cuda = 0
     if args.subcommand == "train":
         train(args)
     else:
@@ -86,10 +84,7 @@ def main():
 def train(args):
     device = torch.device("cuda" if args.cuda else "cpu")
     print("Start seed: ", args.seed)
-    torch.manual_seed(args.seed)
-    if args.cuda:
-        torch.cuda.manual_seed(args.seed)
-    cudnn.benchmark = True
+    utils.set_random_seed(args.seed)
 
     print('===> Loading datasets')
     train_path    = './dataset/trains/'
@@ -127,7 +122,7 @@ def train(args):
     model_name = args.model_title + "_" + args.dataset_name +'_latest.pth'
     model_path = os.path.join(args.save_dir, model_name)
     
-    if torch.cuda.device_count() > 1:
+    if args.cuda and torch.cuda.device_count() > 1:
         print("===> Let's use", torch.cuda.device_count(), "GPUs.")
         net = torch.nn.DataParallel(net)
     start_epoch = 0
@@ -206,9 +201,9 @@ def train(args):
             y, gt = y.squeeze().cpu().numpy().transpose(1, 2, 0), gt.squeeze().cpu().numpy().transpose(1, 2, 0)
             y = y[:gt.shape[0],:gt.shape[1],:] 
             if i==0:
-                indices = quality_assessment(gt, y, data_range=1., ratio=4)
+                indices = quality_assessment(gt, y, data_range=1., ratio=1)
             else:
-                indices = sum_dict(indices, quality_assessment(gt, y, data_range=1., ratio=4))
+                indices = sum_dict(indices, quality_assessment(gt, y, data_range=1., ratio=1))
             output.append(y)
             test_number += 1
         for index in indices:
@@ -256,6 +251,7 @@ def validate(args, loader, model, criterion):
     return epoch_meter.value()[0]
 
 def infer(args):
+    utils.set_random_seed(args.seed)
     inferdata_path  = './dataset/train/'
     result_path   = './dataset/inferred_abu/'
     if not os.path.exists(result_path):

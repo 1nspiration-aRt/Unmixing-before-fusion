@@ -11,6 +11,7 @@ import core.HSImetrics as Metrics
 
 import core.logger as Logger
 import core.vis as visual
+from core import utils
 from core.wandb_logger import WandbLogger
 from core.loaddata import AbuDataset
 
@@ -20,7 +21,8 @@ if __name__ == "__main__":
                         help='JSON file for configuration')
     parser.add_argument('-p', '--phase', type=str, choices=['train', 'val'],
                         help='Run either train(training) or val(generation)', default='train')
-    parser.add_argument('-gpu', '--gpu_ids', type=str, default=None)
+    parser.add_argument('-gpu', '--gpu_ids', type=str, default=None,
+                        help='GPU IDs such as 0 or 0,1; use cpu or -1 for CPU')
     parser.add_argument('-debug', '-d', action='store_true')
     parser.add_argument('-enable_wandb', action='store_true')
     parser.add_argument('-log_wandb_ckpt', action='store_true')
@@ -30,15 +32,17 @@ if __name__ == "__main__":
     opt = Logger.parse(args)
     # Convert to NoneDict, which return None for missing key.
     opt = Logger.dict_to_nonedict(opt)
+    seed = opt['seed'] if opt['seed'] is not None else utils.DEFAULT_SEED
+    utils.set_random_seed(seed)
 
     # logging
     torch.backends.cudnn.enabled = True
-    torch.backends.cudnn.benchmark = True
 
     Logger.setup_logger(None, opt['path']['log'],
                         'train', level=logging.INFO, screen=True)
     Logger.setup_logger('sampling', opt['path']['log'], 'val', level=logging.INFO)
     logger = logging.getLogger('base')
+    logger.info('Random seed: %d', seed)
     logger.info(Logger.dict2str(opt))
     tb_logger = SummaryWriter(log_dir=opt['path']['tb_logger'])
 

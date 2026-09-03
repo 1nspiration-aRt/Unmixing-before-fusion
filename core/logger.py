@@ -47,16 +47,17 @@ def parse(args):
 
     # export CUDA_VISIBLE_DEVICES
     if gpu_ids is not None:
-        opt['gpu_ids'] = [int(id) for id in gpu_ids.split(',')]
-        gpu_list = gpu_ids
-    else:
-        gpu_list = ','.join(str(x) for x in opt['gpu_ids'])
+        requested_device = gpu_ids.strip().lower()
+        if requested_device in ('', '-1', 'cpu'):
+            opt['gpu_ids'] = []
+        else:
+            opt['gpu_ids'] = [int(device_id) for device_id in gpu_ids.split(',')]
+    elif not opt.get('gpu_ids'):
+        opt['gpu_ids'] = []
+    gpu_list = ','.join(str(device_id) for device_id in opt['gpu_ids'])
     os.environ['CUDA_VISIBLE_DEVICES'] = gpu_list
-    print('export CUDA_VISIBLE_DEVICES=' + gpu_list)
-    if len(gpu_list) > 1:
-        opt['distributed'] = True
-    else:
-        opt['distributed'] = False
+    print('CUDA_VISIBLE_DEVICES=' + (gpu_list or 'CPU'))
+    opt['distributed'] = len(opt['gpu_ids']) > 1
 
     # debug
     if 'debug' in opt['name']:

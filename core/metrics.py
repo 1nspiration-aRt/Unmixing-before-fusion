@@ -22,14 +22,17 @@ def compare_ergas(x_true, x_pred, ratio):
     :param ratio: 上采样系数
     :return:
     """
+    if ratio <= 0:
+        raise ValueError("ratio must be positive")
     x_true, x_pred = img_2d_mat(x_true=x_true, x_pred=x_pred)
     sum_ergas = 0
+    eps = np.finfo(np.float32).eps
     for i in range(x_true.shape[0]):
         vec_x = x_true[i]
         vec_y = x_pred[i]
         err = vec_x - vec_y
         r_mse = np.mean(np.power(err, 2))
-        tmp = r_mse / (np.mean(vec_x)**2)
+        tmp = r_mse / max(np.mean(vec_x) ** 2, eps)
         sum_ergas += tmp
     return (100 / ratio) * np.sqrt(sum_ergas / x_true.shape[0])
 
@@ -40,19 +43,20 @@ def compare_sam(x_true, x_pred):
     :param x_pred: 高光谱图像：格式：(H, W, C)
     :return: 计算原始高光谱数据与重构高光谱数据的光谱角相似度
     """
-    num = 0
-    sum_sam = 0
     x_true, x_pred = x_true.astype(np.float32), x_pred.astype(np.float32)
-    for x in range(x_true.shape[0]):
-        for y in range(x_true.shape[1]):
-            tmp_pred = x_pred[x, y].ravel()
-            tmp_true = x_true[x, y].ravel()
-            if np.linalg.norm(tmp_true) != 0 and np.linalg.norm(tmp_pred) != 0:
-                sum_sam += np.arccos(
-                    np.inner(tmp_pred, tmp_true) / (np.linalg.norm(tmp_true) * np.linalg.norm(tmp_pred)))
-                num += 1
-    sam_deg = (sum_sam / num) * 180 / np.pi
-    return sam_deg
+    if x_true.shape != x_pred.shape or x_true.ndim != 3:
+        raise ValueError("x_true and x_pred must have the same HxWxC shape")
+    dot = np.sum(x_true * x_pred, axis=2)
+    true_norm = np.linalg.norm(x_true, axis=2)
+    pred_norm = np.linalg.norm(x_pred, axis=2)
+    denominator = true_norm * pred_norm
+    cosine = np.zeros_like(dot, dtype=np.float32)
+    valid = denominator > np.finfo(np.float32).eps
+    cosine[valid] = dot[valid] / denominator[valid]
+    cosine[(true_norm <= np.finfo(np.float32).eps) &
+           (pred_norm <= np.finfo(np.float32).eps)] = 1.0
+    angles = np.arccos(np.clip(cosine, -1.0, 1.0))
+    return float(np.mean(angles) * 180.0 / np.pi)
 
 
 def compare_corr(x_true, x_pred):
@@ -65,8 +69,16 @@ def compare_corr(x_true, x_pred):
     x_true = x_true - np.mean(x_true, axis=1).reshape(-1, 1)
     x_pred = x_pred - np.mean(x_pred, axis=1).reshape(-1, 1)
     numerator = np.sum(x_true * x_pred, axis=1).reshape(-1, 1)
-    denominator = np.sqrt(np.sum(x_true * x_true, axis=1) * np.sum(x_pred * x_pred, axis=1)).reshape(-1, 1)
-    return (numerator / denominator).mean()
+    denominator = np.sqrt(
+        np.sum(x_true * x_true, axis=1) * np.sum(x_pred * x_pred, axis=1)
+    ).reshape(-1, 1)
+    correlation = np.divide(
+        numerator,
+        denominator,
+        out=np.zeros_like(numerator),
+        where=denominator > np.finfo(np.float32).eps,
+    )
+    return float(correlation.mean())
 
 
 def img_2d_mat(x_true, x_pred):
@@ -76,6 +88,8 @@ def img_2d_mat(x_true, x_pred):
     :param x_pred: (H, W, C)
     :return: a matrix which shape is (C, H * W)
     """
+    if x_true.shape != x_pred.shape or x_true.ndim != 3:
+        raise ValueError("x_true and x_pred must have the same HxWxC shape")
     h, w, c = x_true.shape
     x_true, x_pred = x_true.astype(np.float32), x_pred.astype(np.float32)
     x_mat = np.zeros((c, h * w), dtype=np.float32)
@@ -105,13 +119,13 @@ def compare_mpsnr(x_true, x_pred, data_range):
     """
     x_true, x_pred = x_true.astype(np.float32), x_pred.astype(np.float32)
     channels = x_true.shape[2]
-    total_psnr = [compare_psnr(x_true[:, :, k], x_pred[:, :, k])
+    total_psnr = [compare_psnr(x_true[:, :, k], x_pred[:, :, k], data_range=data_range)
                   for k in range(channels)]
 
     return np.mean(total_psnr)
 
 
-def compare_mssim(x_true, x_pred, data_range, multidimension):
+def compare_mssim(x_true, x_pred, data_range, multidimension=False):
     """
     :param x_true:
     :param x_pred:
@@ -119,7 +133,7 @@ def compare_mssim(x_true, x_pred, data_range, multidimension):
     :param multidimension:
     :return:
     """
-    mssim = [compare_ssim(x_true[:, :, i], x_pred[:, :, i], data_range=data_range, multidimension=multidimension)
+    mssim = [compare_ssim(x_true[:, :, i], x_pred[:, :, i], data_range=data_range)
             for i in range(x_true.shape[2])]
 
     return np.mean(mssim)

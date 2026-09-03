@@ -1,6 +1,7 @@
 {
     "name": "Chikusei",
     "phase": "train",
+    "seed": 3000,
     "gpu_ids": [
         1
     ],
