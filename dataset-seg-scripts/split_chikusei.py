@@ -8,8 +8,9 @@
     python3 dataset-seg-scripts/split_chikusei.py
     python3 dataset-seg-scripts/split_chikusei.py --input /path/to/Chikusei.mat --dry-run
 
-依赖：Python 3、NumPy、SciPy。输出 patch 使用 H x W x C 布局，MAT 键为 Y；
-脚本保留原始数值，归一化由 core/loaddata.py 在训练时执行。
+依赖：Python 3、NumPy、SciPy；读取 MATLAB v7.3 文件还需要 h5py。输出
+patch 使用 H x W x C 布局，MAT 键为 Y；脚本保留原始数值，归一化由
+core/loaddata.py 在训练时执行。
 """
 
 from __future__ import annotations
@@ -27,6 +28,11 @@ try:
     import scipy.io as sio
 except ImportError:  # 未安装 SciPy 时仍允许查看 --help。
     sio = None
+
+try:
+    import h5py
+except ImportError:  # 非 v7.3 文件不需要 h5py。
+    h5py = None
 
 
 # 用户可直接修改默认路径，也可通过 --input 和 --output 临时覆盖。
@@ -70,6 +76,29 @@ def require_scipy():
     return sio
 
 
+def load_v73_variable(input_path: Path, mat_key: str) -> np.ndarray:
+    """使用 HDF5 读取 MATLAB v7.3 数值数组并恢复 MATLAB 维度顺序。"""
+
+    if h5py is None:
+        raise RuntimeError(
+            "读取 MATLAB v7.3 文件需要 h5py：python3 -m pip install h5py"
+        )
+    try:
+        with h5py.File(str(input_path), "r") as mat_file:
+            if mat_key not in mat_file:
+                keys = [key for key in mat_file.keys() if not key.startswith("#")]
+                raise KeyError(f"MAT 文件中没有变量 {mat_key!r}；可用变量：{keys}")
+            dataset = mat_file[mat_key]
+            if not isinstance(dataset, h5py.Dataset):
+                raise ValueError(f"MAT 变量 {mat_key!r} 不是数值数组")
+            # MATLAB v7.3 在 HDF5 中按逆序保存数组维度。
+            return np.asarray(dataset).transpose()
+    except (KeyError, ValueError):
+        raise
+    except OSError as exc:
+        raise RuntimeError(f"无法以 MATLAB v7.3/HDF5 格式读取：{input_path}") from exc
+
+
 def parse_band_axis(value: str) -> Optional[int]:
     """解析光谱轴；auto 表示自动查找长度为 128 的维度。"""
 
@@ -106,16 +135,14 @@ def load_hsi(input_path: Path, mat_key: str, band_axis: Optional[int]) -> Tuple[
         raise FileNotFoundError(f"输入数据集不存在：{input_path}")
     try:
         mat_data = mat_io.loadmat(str(input_path))
-    except NotImplementedError as exc:
-        raise RuntimeError("MATLAB v7.3 文件暂不受 scipy.io.loadmat 支持") from exc
+        if mat_key not in mat_data:
+            keys = [key for key in mat_data if not key.startswith("__")]
+            raise KeyError(f"MAT 文件中没有变量 {mat_key!r}；可用变量：{keys}")
+        cube = np.asarray(mat_data[mat_key])
+    except NotImplementedError:
+        cube = load_v73_variable(input_path, mat_key)
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"无法读取 MAT 文件：{input_path}") from exc
-
-    if mat_key not in mat_data:
-        keys = [key for key in mat_data if not key.startswith("__")]
-        raise KeyError(f"MAT 文件中没有变量 {mat_key!r}；可用变量：{keys}")
-
-    cube = np.asarray(mat_data[mat_key])
     raw_shape = list(cube.shape)
     if cube.ndim != 3 or np.iscomplexobj(cube):
         raise ValueError(f"HSI 必须是三维实数数组，实际形状：{cube.shape}")
