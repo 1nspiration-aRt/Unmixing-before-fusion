@@ -243,7 +243,9 @@ def quality_assessment(x_true, x_pred, data_range, ratio, multi_dimension=False,
               # 'MARE': compare_mare(x_true=x_true, x_pred=x_pred),
               # "QAVE": compare_qave(x_true=x_true, x_pred=x_pred, block_size=block_size)
               }
-    return result
+    # NumPy reductions can return np.float32/np.float64, which json.dump
+    # cannot serialize reliably.  Keep the public metric contract JSON-safe.
+    return {name: float(value) for name, value in result.items()}
 
 # from scipy import io as sio
 # im_out = np.array(sio.loadmat('/home/zhwzhong/PycharmProject/HyperSR/SOAT/HyperSR/SRindices/Chikuse_EDSRViDeCNN_Blocks=9_Feats=256_Loss_H_Real_1_1_X2X2_N5new_BS32_Epo60_epoch_60_Fri_Sep_20_21:38:44_2019.mat')['output'])

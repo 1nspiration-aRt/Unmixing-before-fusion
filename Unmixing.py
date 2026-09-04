@@ -240,8 +240,9 @@ def train(args):
     print("Test finished, test results saved to .npy file at ", save_dir)
     print(indices)
 
-    QIstr =os.path.join(log_dir , args.model_title + "_" + args.dataset_name +"_log.txt")
-    json.dump(indices, open(QIstr, 'w'))
+    QIstr = os.path.join(log_dir, args.model_title + "_" + args.dataset_name + "_log.txt")
+    with open(QIstr, "w", encoding="utf-8") as metrics_file:
+        json.dump(indices, metrics_file, ensure_ascii=False, indent=2)
 
 
 def sum_dict(a, b):
