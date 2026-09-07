@@ -4,11 +4,11 @@
 用法：
     python dataset-seg-scripts/extract_chikusei_rgb.py --input E:\Hw9999\BaiduNetdiskDownload\DataSet\Chikusei\Chikusei_MATLAB\HyperspecVNIR_Chikusei_20140729.mat --inspect
     python dataset-seg-scripts/extract_chikusei_rgb.py --input E:\Hw9999\BaiduNetdiskDownload\DataSet\Chikusei\Chikusei_MATLAB\HyperspecVNIR_Chikusei_20140729.mat --key chikusei --output preview.png
-    python dataset-seg-scripts/extract_chikusei_rgb.py --input E:\Hw9999\BaiduNetdiskDownload\DataSet\Chikusei\Chikusei_MATLAB\HyperspecVNIR_Chikusei_20140729.mat --bands 14 24 34 --output preview.png
+    python dataset-seg-scripts/extract_chikusei_rgb.py --input E:\Hw9999\BaiduNetdiskDownload\DataSet\Chikusei\Chikusei_MATLAB\HyperspecVNIR_Chikusei_20140729.mat --bands 52 32 12 --output preview.png
 
 输入为 H×W×128 或 H×W×59，其他布局通过 --band-axis 指定光谱轴。
 --bands 始终是裁剪后 59 波段内的 Python 零基索引，顺序为 R、G、B。
-原始 128 波段对应先取 [7:66]；默认 RGB 对应原始索引 14、24、34。
+原始 128 波段对应先取 [7:66]；默认 RGB 对应原始索引 52、32、12。
 兼容 MATLAB v7.3；该格式仅读取选中的三个波段，避免展开完整数据立方体。
 PNG 使用三个通道共用的 min/max 显示拉伸，不代表物理真彩色，也不用于训练。
 --inspect 仅打印变量形状、类型及小型数值变量，便于查找波长表；不生成文件。
