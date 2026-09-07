@@ -9,6 +9,8 @@ from core import utils
 # Chikusei's 59-band setting keeps bands 8--66 in MATLAB indexing, i.e.
 # 7:66 in Python indexing. RGB indices are zero-based within these 59 bands.
 CHIKUSEI_BAND_SLICE = slice(7, 66)
+# R/G/B: original zero-based indices (59, 39, 19), i.e. ENVI bands 60/40/20.
+CHIKUSEI_RGB_BANDS = (52, 32, 12)
 DEFAULT_RGB_BANDS = (7, 17, 27)
 
 def is_mat_file(filename):
@@ -58,12 +60,16 @@ class HSIDataset(data.Dataset):
         augment=None,
         use_3D=False,
         output_channels=59,
-        rgb_bands=DEFAULT_RGB_BANDS
+        rgb_bands=None
     ):
         self.image_files = _list_mat_files(image_dir)
         self.augment = augment
         self.use_3Dconv = use_3D
         self.output_channels = output_channels
+        # Use the visible red/green/blue bands for Chikusei; preserve other
+        # datasets' defaults and allow an explicit band selection to override.
+        if rgb_bands is None:
+            rgb_bands = CHIKUSEI_RGB_BANDS if output_channels == 59 else DEFAULT_RGB_BANDS
         self.rgb_bands = tuple(rgb_bands)
         if self.augment:
             self.factor = 8
