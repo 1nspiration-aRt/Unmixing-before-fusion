@@ -7,10 +7,7 @@ float32，并以 H x W x 3 布局保存到 MAT 变量 ``Y``。
 运行环境：Python 3.10，依赖 NumPy、OpenCV 和 SciPy。
 
 使用示例：
-    python dataset-seg-scripts/convert_rgb_jpg_to_mat.py \
-        --input-dir "D:\\RGBDataset\\forest" \
-        --output-dir ./dataset/train \
-        --size 256
+    python dataset-seg-scripts/convert_rgb_jpg_to_mat.py --input-dir "D:\\RGBDataset\\fores" --output-dir ./dataset/train --size 256
 
 默认不会覆盖已有同名 MAT 文件；确认需要覆盖时添加 ``--overwrite``。
 """
