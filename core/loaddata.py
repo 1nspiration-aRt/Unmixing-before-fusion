@@ -7,7 +7,7 @@ from core import utils
 
 
 # Chikusei's 59-band setting keeps bands 8--66 in MATLAB indexing, i.e.
-# 7:66 in Python indexing. These three bands form the encoder input.
+# 7:66 in Python indexing. RGB indices are zero-based within these 59 bands.
 CHIKUSEI_BAND_SLICE = slice(7, 66)
 DEFAULT_RGB_BANDS = (7, 17, 27)
 
@@ -97,7 +97,8 @@ class HSIDataset(data.Dataset):
             )
 
         hsi = datanorm(hsi)
-        pseudo_rgb = datanorm(hsi[:, :, self.rgb_bands])
+        # Preserve the normalized HSI target's scale in the selected input bands.
+        pseudo_rgb = hsi[:, :, self.rgb_bands]
         hsi = utils.data_augmentation(hsi, mode=aug_num)
         pseudo_rgb = utils.data_augmentation(pseudo_rgb, mode=aug_num)
 
