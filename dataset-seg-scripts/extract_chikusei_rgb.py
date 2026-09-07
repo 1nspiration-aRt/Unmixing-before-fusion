@@ -2,9 +2,9 @@
 
 环境：Python 3.10+，numpy、scipy、h5py、Pillow。
 用法：
-    python dataset-seg-scripts/extract_chikusei_rgb.py --input /path/Chikusei.mat --inspect
-    python dataset-seg-scripts/extract_chikusei_rgb.py --input /path/Chikusei.mat --key Y --output preview.png
-    python dataset-seg-scripts/extract_chikusei_rgb.py --input /path/patch.mat --bands 7 17 27 --output preview.png
+    python dataset-seg-scripts/extract_chikusei_rgb.py --input E:\Hw9999\BaiduNetdiskDownload\DataSet\Chikusei\Chikusei_MATLAB\HyperspecVNIR_Chikusei_20140729.mat --inspect
+    python dataset-seg-scripts/extract_chikusei_rgb.py --input E:\Hw9999\BaiduNetdiskDownload\DataSet\Chikusei\Chikusei_MATLAB\HyperspecVNIR_Chikusei_20140729.mat --key chikusei --output preview.png
+    python dataset-seg-scripts/extract_chikusei_rgb.py --input E:\Hw9999\BaiduNetdiskDownload\DataSet\Chikusei\Chikusei_MATLAB\HyperspecVNIR_Chikusei_20140729.mat --bands 14 24 34 --output preview.png
 
 输入为 H×W×128 或 H×W×59，其他布局通过 --band-axis 指定光谱轴。
 --bands 始终是裁剪后 59 波段内的 Python 零基索引，顺序为 R、G、B。
@@ -100,7 +100,7 @@ def read_rgb(path, key, band_axis, bands):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--input', type=Path, required=True, help='原始128波段或裁剪后59波段 MAT')
-    parser.add_argument('--key', default='Y', help='HSI变量名；用 --inspect 查看')
+    parser.add_argument('--key', default='chikusei', help='HSI变量名；用 --inspect 查看')
     parser.add_argument('--bands', type=int, nargs=3, default=[7, 17, 27], metavar=('R', 'G', 'B'))
     parser.add_argument('--band-axis', type=int, choices=(0, 1, 2), help='MAT逻辑布局的光谱轴，默认自动识别')
     parser.add_argument('--output', type=Path, help='输出 PNG 路径')
