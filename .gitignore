@@ -5,3 +5,5 @@
 /experiments
 
 /smoketest
+/core/__pycache__
+/unmixingmodel/__pycache__
