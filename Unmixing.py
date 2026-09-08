@@ -70,7 +70,7 @@ def main():
     train_parser.add_argument("--cuda", type=int, required=False,default=1,
                               help="set it to 1 for running on GPU, 0 for CPU")
     train_parser.add_argument("--batch_size", type=int, default=16, help="batch size, default set to 64")
-    train_parser.add_argument("--n_feats", type=int, default=128, help="n_feats, default set to 256")
+    train_parser.add_argument("--n_feats", type=int, default=256, help="n_feats, default set to 256")
     train_parser.add_argument("--epochs", type=int, default=40, help="epochs, default set to 20")
     train_parser.add_argument("--n_blocks", type=int, default=3, help="n_blocks, default set to 6")
     train_parser.add_argument("--dataset_name", type=str, default="Chikusei", help="dataset_name, default set to dataset_name")
@@ -87,7 +87,7 @@ def main():
     infer_parser.add_argument("--cuda", type=int, required=False,default=1,
                              help="set it to 1 for running on GPU, 0 for CPU")
     infer_parser.add_argument("--gpus", type=str, default="0", help="gpu ids (default: 0)")
-    infer_parser.add_argument("--n_blocks", type=int, default=3, help="n_blocks, default set to 6")
+    infer_parser.add_argument("--n_blocks", type=int, default=6, help="n_blocks, default set to 6")
     infer_parser.add_argument("--ckpt_dir", type=str, default="./experiments/unmixing/ckpts/", help="dataset_name, default set to dataset_name")
     infer_parser.add_argument("--dataset_name", type=str, default="Chikusei", help="dataset_name, default set to dataset_name")
     infer_parser.add_argument("--model_title", type=str, default="UnmixingAE", help="model_title, default set to model_title")
