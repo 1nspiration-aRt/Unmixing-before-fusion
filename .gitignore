@@ -7,3 +7,4 @@
 /smoketest
 /core/__pycache__
 /unmixingmodel/__pycache__
+/diffusionmodel/__pycache__
