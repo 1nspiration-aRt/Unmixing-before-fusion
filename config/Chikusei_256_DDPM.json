@@ -3,7 +3,7 @@
     "phase": "train",
     "seed": 3000,
     "gpu_ids": [
-        1
+        0
     ],
     "path": {
         "log": "logs",
@@ -62,10 +62,18 @@
         }
     },
     "train": {
-        "n_iter": 30000000,
+        "n_iter": 2800000,
         "val_freq": 1e4,
         "save_checkpoint_freq": 1e4,
         "print_freq": 200,
+        "batch_size": 8,
+        "num_workers": 4,
+        "pin_memory": true,
+        "persistent_workers": true,
+        "channels_last": true,
+        "amp": true,
+        "amp_dtype": "float16",
+        "deterministic": false,
         "optimizer": {
             "type": "adam",
             "lr": 1e-4

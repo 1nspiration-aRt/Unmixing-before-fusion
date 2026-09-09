@@ -1,8 +1,15 @@
+"""训练或采样 abundance-space DDPM。
+
+训练示例：python Diffusion.py -p train -c config/Chikusei_256_DDPM.json -gpu 0
+运行环境：Python、PyTorch、CUDA/cuDNN；RTX 4080 默认启用 FP16 AMP 加速。
+"""
+
 import os
 import numpy as np
 import diffusionmodel as Model
 import argparse
 import logging
+import time
 
 import torch
 from torch.utils.data import DataLoader
@@ -33,7 +40,8 @@ if __name__ == "__main__":
     # Convert to NoneDict, which return None for missing key.
     opt = Logger.dict_to_nonedict(opt)
     seed = opt['seed'] if opt['seed'] is not None else utils.DEFAULT_SEED
-    utils.set_random_seed(seed)
+    deterministic = bool(opt['train']['deterministic'])
+    utils.set_random_seed(seed, deterministic=deterministic)
 
     # logging
     torch.backends.cudnn.enabled = True
@@ -44,6 +52,19 @@ if __name__ == "__main__":
     logger = logging.getLogger('base')
     logger.info('Random seed: %d', seed)
     logger.info(Logger.dict2str(opt))
+    if opt['gpu_ids']:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                'CUDA GPU was requested but is unavailable; refusing to fall back to CPU.'
+            )
+        logger.info(
+            'CUDA device: %s | CUDA: %s | cuDNN: %s',
+            torch.cuda.get_device_name(0),
+            torch.version.cuda,
+            torch.backends.cudnn.version(),
+        )
+    else:
+        logger.info('Training device: CPU (explicitly selected)')
     tb_logger = SummaryWriter(log_dir=opt['path']['tb_logger'])
 
     # Initialize WandbLogger
@@ -55,19 +76,38 @@ if __name__ == "__main__":
 
     train_path    = './dataset/inferred_abu/'
     train_set = AbuDataset(image_dir=train_path, augment=False)
-    train_loader = DataLoader(train_set, batch_size=8, num_workers=4, shuffle=True)
+    num_workers = int(opt['train']['num_workers'])
+    pin_memory = bool(opt['train']['pin_memory']) and bool(opt['gpu_ids'])
+    train_loader = DataLoader(
+        train_set,
+        batch_size=int(opt['train']['batch_size']),
+        num_workers=num_workers,
+        shuffle=True,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0 and bool(opt['train']['persistent_workers']),
+    )
     
     logger.info('Initial Dataset Finished')
 
     # model
     diffusion = Model.create_model(opt)
     logger.info('Initial Model Finished')
+    logger.info(
+        'Acceleration: AMP=%s (%s) | channels_last=%s | cuDNN benchmark=%s | deterministic=%s',
+        diffusion.use_amp,
+        opt['train']['amp_dtype'],
+        diffusion.channels_last,
+        torch.backends.cudnn.benchmark,
+        deterministic,
+    )
 
     # Train
     current_step = diffusion.begin_step
     current_epoch = diffusion.begin_epoch
     n_iter = opt['train']['n_iter']
     sample_sum = opt['datasets']['val']['data_len']
+    val_freq = int(opt['train']['val_freq'])
+    save_checkpoint_freq = int(opt['train']['save_checkpoint_freq'])
 
     if opt['path']['resume_state']:
         logger.info('Resuming training from epoch: {}, iter: {}.'.format(
@@ -77,29 +117,53 @@ if __name__ == "__main__":
         opt['model']['beta_schedule'][opt['phase']], schedule_phase=opt['phase'])
 
     if opt['phase'] == 'train':
+        if diffusion.device.type == 'cuda':
+            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.synchronize()
+        timing_start = time.perf_counter()
+        timing_step = current_step
+        timing_samples = 0
         while current_step < n_iter:
             current_epoch += 1
             for _, train_data in enumerate(train_loader):
                 current_step += 1
                 if current_step > n_iter:
                     break
+                timing_samples += int(train_data['Abu'].shape[0])
                 diffusion.feed_data(train_data)
                 diffusion.optimize_parameters()
                 # log                
                 if current_step % opt['train']['print_freq'] == 0:
+                    if diffusion.device.type == 'cuda':
+                        torch.cuda.synchronize()
+                    elapsed = time.perf_counter() - timing_start
+                    completed_steps = current_step - timing_step
+                    seconds_per_iter = elapsed / max(completed_steps, 1)
+                    samples_per_second = timing_samples / max(elapsed, 1e-12)
                     logs = diffusion.get_current_log()
                     message = '<epoch:{:3d}, iter:{:8,d}> '.format(
                         current_epoch, current_step)
                     for k, v in logs.items():
                         message += '{:s}: {:.4e} '.format(k, v)
                         tb_logger.add_scalar(k, v, current_step)
+                    message += 'time/iter: {:.3f}s samples/s: {:.2f} '.format(
+                        seconds_per_iter, samples_per_second)
+                    if diffusion.device.type == 'cuda':
+                        peak_memory_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+                        message += 'peak_mem: {:.2f}GB '.format(peak_memory_gb)
                     logger.info(message)
+
+                    timing_start = time.perf_counter()
+                    timing_step = current_step
+                    timing_samples = 0
+                    if diffusion.device.type == 'cuda':
+                        torch.cuda.reset_peak_memory_stats()
 
                     if wandb_logger:
                         wandb_logger.log_metrics(logs)
 
                 # validation
-                if current_step % 25000 == 0:
+                if val_freq > 0 and current_step % val_freq == 0:
 
                     result_path = '{}/{}'.format(opt['path']
                                                  ['results'], current_epoch)
@@ -113,7 +177,7 @@ if __name__ == "__main__":
                     diffusion.set_new_noise_schedule(
                         opt['model']['beta_schedule']['val'], schedule_phase='val')
 
-                    for idx in range(10):
+                    for idx in range(sample_sum):
                         
                         diffusion.sample(continous=False)
                         visuals = diffusion.get_current_visuals(sample=True)
@@ -137,14 +201,24 @@ if __name__ == "__main__":
 
                     diffusion.set_new_noise_schedule(
                         opt['model']['beta_schedule']['train'], schedule_phase='train')
+                    if diffusion.device.type == 'cuda':
+                        torch.cuda.synchronize()
+                    timing_start = time.perf_counter()
+                    timing_step = current_step
+                    timing_samples = 0
 
-                # if current_step % opt['train']['save_checkpoint_freq'] == 0:
-                if current_step % 25000 == 0:
+                if save_checkpoint_freq > 0 and current_step % save_checkpoint_freq == 0:
                     logger.info('Saving models and training states.')
                     diffusion.save_network(current_epoch, current_step)
 
                     if wandb_logger and opt['log_wandb_ckpt']:
                         wandb_logger.log_checkpoint(current_epoch, current_step)
+
+                    if diffusion.device.type == 'cuda':
+                        torch.cuda.synchronize()
+                    timing_start = time.perf_counter()
+                    timing_step = current_step
+                    timing_samples = 0
 
         # save model
         logger.info('End of training.')

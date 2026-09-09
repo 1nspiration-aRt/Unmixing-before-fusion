@@ -9,24 +9,26 @@ import random
 DEFAULT_SEED = 3000
 
 
-def set_random_seed(seed=DEFAULT_SEED):
-    """固定 Python、NumPy 和 PyTorch 随机状态，尽量保证实验可复现。"""
+def set_random_seed(seed=DEFAULT_SEED, deterministic=False):
+    """设置随机种子，并按需切换确定性或高性能 CUDA 执行模式。"""
     if seed < 0:
         raise ValueError("seed must be non-negative")
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    if deterministic:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     if hasattr(torch.backends, "cudnn"):
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+        # 输入空间尺寸固定为 256x256 时，benchmark 可选择更快的卷积实现。
+        torch.backends.cudnn.benchmark = not deterministic
+        torch.backends.cudnn.deterministic = deterministic
     if hasattr(torch, "use_deterministic_algorithms"):
         try:
-            torch.use_deterministic_algorithms(True, warn_only=True)
+            torch.use_deterministic_algorithms(deterministic, warn_only=True)
         except TypeError:
-            torch.use_deterministic_algorithms(True)
+            torch.use_deterministic_algorithms(deterministic)
 
 def data_augmentation(label, mode=0):
     if mode == 0:
