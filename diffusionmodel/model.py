@@ -14,7 +14,23 @@ class DDPM(BaseModel):
         super(DDPM, self).__init__(opt)
         # define network and load pretrained models
         self.netG = self.set_device(networks.define_G(opt))
+        if self.channels_last:
+            self.netG = self.netG.to(memory_format=torch.channels_last)
         self.schedule_phase = None
+
+        amp_dtype_name = opt['train']['amp_dtype'] or 'float16'
+        amp_dtypes = {
+            'float16': torch.float16,
+            'bfloat16': torch.bfloat16,
+        }
+        if amp_dtype_name not in amp_dtypes:
+            raise ValueError("train.amp_dtype must be 'float16' or 'bfloat16'")
+        self.amp_dtype = amp_dtypes[amp_dtype_name]
+        self.use_amp = bool(opt['train']['amp']) and self.device.type == 'cuda'
+        # FP16 需要动态损失缩放；BF16 的指数范围通常不需要 GradScaler。
+        self.scaler = torch.cuda.amp.GradScaler(
+            enabled=self.use_amp and self.amp_dtype == torch.float16
+        )
 
         # set loss and load resume state
         self.set_loss()
@@ -46,20 +62,29 @@ class DDPM(BaseModel):
         self.data = self.set_device(data)
 
     def optimize_parameters(self):
-        self.optG.zero_grad()
-        l_pix = self.netG(self.data)
-        # need to average in multi-gpu
-        b, c, h, w = self.data['Abu'].shape
-        l_pix = l_pix.sum()/int(b*c*h*w)
-        l_pix.backward()
-        self.optG.step()
+        """使用可选 AMP 完成一次 DDPM 噪声预测参数更新。"""
+        self.optG.zero_grad(set_to_none=True)
+        with torch.cuda.amp.autocast(
+            enabled=self.use_amp,
+            dtype=self.amp_dtype,
+        ):
+            l_pix = self.netG(self.data)
+            # need to average in multi-gpu
+            b, c, h, w = self.data['Abu'].shape
+            l_pix = l_pix.sum()/int(b*c*h*w)
+        self.scaler.scale(l_pix).backward()
+        self.scaler.step(self.optG)
+        self.scaler.update()
 
         # set log
         self.log_dict['l_pix'] = l_pix.item()
 
     def sample(self, batch_size=1, continous=False):
         self.netG.eval()
-        with torch.no_grad():
+        with torch.no_grad(), torch.cuda.amp.autocast(
+            enabled=self.use_amp,
+            dtype=self.amp_dtype,
+        ):
             if isinstance(self.netG, nn.DataParallel):
                 self.output = self.netG.module.sample(batch_size, continous)
             else:
@@ -117,8 +142,10 @@ class DDPM(BaseModel):
         torch.save(state_dict, gen_path)
         # opt
         opt_state = {'epoch': epoch, 'iter': iter_step,
-                     'scheduler': None, 'optimizer': None}
+                     'scheduler': None, 'optimizer': None, 'scaler': None}
         opt_state['optimizer'] = self.optG.state_dict()
+        if self.scaler.is_enabled():
+            opt_state['scaler'] = self.scaler.state_dict()
         torch.save(opt_state, opt_path)
 
         logger.info(
@@ -145,5 +172,7 @@ class DDPM(BaseModel):
                 # optimizer
                 opt = torch.load(opt_path, map_location=self.device)
                 self.optG.load_state_dict(opt['optimizer'])
+                if self.scaler.is_enabled() and opt.get('scaler') is not None:
+                    self.scaler.load_state_dict(opt['scaler'])
                 self.begin_step = opt['iter']
                 self.begin_epoch = opt['epoch']
