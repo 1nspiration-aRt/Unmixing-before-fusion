@@ -18,7 +18,7 @@
             "data_len": -1
         },
         "val": {
-            "data_len": 50
+            "data_len": 1
         }
     },
     "model": {
@@ -31,9 +31,9 @@
             "channel_multiplier": [
                 1,
                 2,
+                2,
                 4,
-                8,
-                8
+                4
             ],
             "attn_res": [
                 16
@@ -62,11 +62,11 @@
         }
     },
     "train": {
-        "n_iter": 2800000,
-        "val_freq": 1e4,
+        "n_iter": 300000,
+        "val_freq": 5e4,
         "save_checkpoint_freq": 1e4,
         "print_freq": 200,
-        "batch_size": 8,
+        "batch_size": 4,
         "num_workers": 4,
         "pin_memory": true,
         "persistent_workers": true,
