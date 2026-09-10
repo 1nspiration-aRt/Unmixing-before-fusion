@@ -11,10 +11,7 @@
 或桌面显示环境。
 
 运行示例：
-    python3 visualize_abundance.py \
-        --input dataset/inferred_abu \
-        --output-dir experiments/abundance_vis \
-        --num-samples 10
+    python visualize_abundance.py --input dataset/inferred_abu --output-dir experiments/abundance_vis  --num-samples 10
 
 也可以直接可视化单个文件，或指定其他 MAT 键：
     python3 visualize_abundance.py \
