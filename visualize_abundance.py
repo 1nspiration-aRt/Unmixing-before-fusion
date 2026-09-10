@@ -4,7 +4,8 @@
 主要功能：读取一个 MAT 文件或目录中的多个 MAT 文件，提取指定键对应的
 五通道丰度图，分别保存每个通道的伪彩色图，并额外保存一张五通道拼图。
 默认按照当前 Step 1 推理输出约定读取 ``Abu``，数据布局为 H x W x 5，
-数值显示范围固定为 [0, 1]。
+数值显示范围固定为 [0, 1]。默认使用与论文丰度示例一致的蓝-青-绿-黄-红
+渐变（经典 ``jet`` 风格）。
 
 运行环境：Python 3、NumPy、SciPy。脚本直接写入 PNG，不依赖 Matplotlib
 或桌面显示环境。
@@ -12,7 +13,8 @@
 运行示例：
     python3 visualize_abundance.py \
         --input dataset/inferred_abu \
-        --output-dir experiments/abundance_vis
+        --output-dir experiments/abundance_vis \
+        --num-samples 10
 
 也可以直接可视化单个文件，或指定其他 MAT 键：
     python3 visualize_abundance.py \
@@ -34,12 +36,26 @@ import numpy as np
 
 DEFAULT_KEY = "Abu"
 DEFAULT_CHANNELS = 5
-DEFAULT_CMAP = "viridis"
+DEFAULT_CMAP = "jet"
 DEFAULT_VMIN = 0.0
 DEFAULT_VMAX = 1.0
 
 # 使用少量固定色阶插值生成伪彩色图，避免为简单可视化额外依赖绘图库。
 COLOR_STOPS = {
+    "jet": np.asarray(
+        [
+            (0, 0, 128),
+            (0, 0, 255),
+            (0, 128, 255),
+            (0, 255, 255),
+            (128, 255, 128),
+            (255, 255, 0),
+            (255, 128, 0),
+            (255, 0, 0),
+            (128, 0, 0),
+        ],
+        dtype=np.float32,
+    ),
     "viridis": np.asarray(
         [
             (68, 1, 84),
@@ -68,7 +84,7 @@ COLOR_STOPS = {
 
 
 def list_mat_files(input_path: Path) -> list[Path]:
-    """解析单个 MAT 文件或目录，并按文件名排序返回输入文件。"""
+    """解析单个 MAT 文件或目录，并按文件名排序返回全部输入文件。"""
 
     if input_path.is_file():
         if input_path.suffix.lower() != ".mat":
@@ -86,6 +102,27 @@ def list_mat_files(input_path: Path) -> list[Path]:
     if not mat_files:
         raise RuntimeError(f"输入目录中没有 .mat 文件：{input_path}")
     return mat_files
+
+
+def select_mat_files(input_path: Path, num_samples: int | None) -> list[Path]:
+    """按照用户指定的数量选择输入文件，避免无意中处理整个目录。"""
+
+    mat_files = list_mat_files(input_path)
+    if num_samples is None:
+        return mat_files
+    if num_samples <= 0:
+        raise ValueError("--num-samples 必须为正整数")
+    if input_path.is_file():
+        if num_samples != 1:
+            raise ValueError(
+                "输入为单个 MAT 文件时，--num-samples 只能设置为 1"
+            )
+        return mat_files
+    if num_samples > len(mat_files):
+        raise ValueError(
+            f"请求生成 {num_samples} 个样本，但输入目录只有 {len(mat_files)} 个 MAT 文件"
+        )
+    return mat_files[:num_samples]
 
 
 def load_abundance(
@@ -271,6 +308,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="可视化结果输出目录",
     )
     parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=None,
+        help="目录输入时按文件名排序后取前 N 个 MAT；省略则处理全部文件",
+    )
+    parser.add_argument(
         "--key",
         default=DEFAULT_KEY,
         help=f"MAT 数据键名，默认：{DEFAULT_KEY}",
@@ -318,7 +361,7 @@ def run(args: argparse.Namespace) -> None:
     if args.cmap not in COLOR_STOPS:
         raise ValueError(f"不存在的伪彩色方案：{args.cmap}")
 
-    mat_files = list_mat_files(args.input_path)
+    mat_files = select_mat_files(args.input_path, args.num_samples)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     for index, mat_path in enumerate(mat_files, start=1):
