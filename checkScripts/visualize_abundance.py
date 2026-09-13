@@ -24,12 +24,11 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import struct
 import zlib
+from pathlib import Path
 
 import numpy as np
-
 
 DEFAULT_KEY = "Abu"
 DEFAULT_CHANNELS = 5

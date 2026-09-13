@@ -26,12 +26,7 @@
     CUDA 可用时可以使用 GPU；本脚本不会执行训练、optimizer.step() 或参数更新。
 
 推荐运行命令：
-    python3 validate_unmixing_reconstruction.py \
-        --input-dir dataset/tests \
-        --checkpoint experiments/unmixing/ckpts/UnmixingAE_Chikusei_latest.pth \
-        --output-dir "experiments/compare generate hsi/validation_results" \
-        --device auto \
-        --n-blocks 3
+    python validate_unmixing_reconstruction.py --input-dir dataset/tests --checkpoint experiments/unmixing/ckpts/UnmixingAE_Chikusei_latest.pth --output-dir "experiments/compare generate hsi/validation_results"  --device auto  --n-blocks 3
 
 输入：
     --input-dir：由 Chikusei 分割脚本生成的 tests MAT 目录，默认 ``dataset/tests``；
@@ -80,7 +75,7 @@ from core.loaddata import (
 )
 from core.metrics import compare_mpsnr, compare_rmse, compare_sam
 from unmixingmodel.unmixingAE import UnmixingAE
-from visualize_abundance import (
+from checkScripts.visualize_abundance import (
     DEFAULT_CMAP,
     DEFAULT_VMAX,
     DEFAULT_VMIN,
