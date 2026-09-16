@@ -82,6 +82,11 @@ def main():
     train_parser.add_argument("--save_dir", type=str, default="./experiments/unmixing/ckpts/",
                               help="directory for saving trained models, default is trained_model folder")
     train_parser.add_argument("--gpus", type=str, default="0", help="gpu ids (default: 0)")
+    train_parser.add_argument(
+        "--skip_test",
+        action="store_true",
+        help="skip loading dataset/tests and the final test; training and validation still run",
+    )
 
     infer_parser = subparsers.add_parser("infer", help="parser for inferring arguments")
     infer_parser.add_argument("--cuda", type=int, required=False,default=1,
@@ -115,7 +120,6 @@ def train(args):
     print('===> Loading datasets')
     train_path    = './dataset/trains/'
     eval_path     = './dataset/evals/'
-    test_data_dir = './dataset/tests/'
 
     colors = output_channels(args.dataset_name)
     train_set = HSIDataset(
@@ -128,14 +132,18 @@ def train(args):
         augment=False,
         output_channels=colors
     )
-    test_set = HSIDataset(
-        image_dir=test_data_dir,
-        augment=False,
-        output_channels=colors
-    )
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=8, shuffle=True)
     eval_loader = DataLoader(eval_set, batch_size=args.batch_size, num_workers=4, shuffle=False)
-    test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+    test_loader = None
+    if not args.skip_test:
+        test_set = HSIDataset(
+            image_dir='./dataset/tests/',
+            augment=False,
+            output_channels=colors
+        )
+        test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+    else:
+        print("===> Final test disabled; dataset/tests will not be loaded")
 
     print('===> Building model')
     net = UnmixingAE(
@@ -214,35 +222,40 @@ def train(args):
             model_t = args.model_title + "_" + args.dataset_name +"_epoch_" + str(e+1) + ".pth"
             save_checkpoint(args, net, e+1, model_t)
 
-    ## Save the testing results
-    print('===> Start testing')
-    net.to(device).eval()
-    with torch.no_grad():
-        output = []
-        test_number = 0
-        for i, (gt, rgbdata) in enumerate(test_loader):
-            gt = gt.to(device)
-            rgbdata = rgbdata.to(device)
-            _, y, decoder_weight = forward_with_cudnn_fallback(net, rgbdata)
-            y, gt = y.squeeze().cpu().numpy().transpose(1, 2, 0), gt.squeeze().cpu().numpy().transpose(1, 2, 0)
-            y = y[:gt.shape[0],:gt.shape[1],:] 
-            if i==0:
-                indices = quality_assessment(gt, y, data_range=1., ratio=1)
-            else:
-                indices = sum_dict(indices, quality_assessment(gt, y, data_range=1., ratio=1))
-            output.append(y)
-            test_number += 1
-        for index in indices:
-            indices[index] = indices[index] / test_number
+    if args.skip_test:
+        print("===> Training and validation finished; final test skipped")
+    else:
+        # Save the testing results only when an independent test set is available.
+        print('===> Start testing')
+        net.to(device).eval()
+        with torch.no_grad():
+            output = []
+            test_number = 0
+            for i, (gt, rgbdata) in enumerate(test_loader):
+                gt = gt.to(device)
+                rgbdata = rgbdata.to(device)
+                _, y, decoder_weight = forward_with_cudnn_fallback(net, rgbdata)
+                y, gt = y.squeeze().cpu().numpy().transpose(1, 2, 0), gt.squeeze().cpu().numpy().transpose(1, 2, 0)
+                y = y[:gt.shape[0],:gt.shape[1],:]
+                if i == 0:
+                    indices = quality_assessment(gt, y, data_range=1., ratio=1)
+                else:
+                    indices = sum_dict(indices, quality_assessment(gt, y, data_range=1., ratio=1))
+                output.append(y)
+                test_number += 1
+            for index in indices:
+                indices[index] = indices[index] / test_number
 
-    save_dir = os.path.join(log_dir , args.model_title + "_" + args.dataset_name + '_test.npy')
-    np.save(save_dir, output)
-    print("Test finished, test results saved to .npy file at ", save_dir)
-    print(indices)
+        save_dir = os.path.join(log_dir, args.model_title + "_" + args.dataset_name + '_test.npy')
+        np.save(save_dir, output)
+        print("Test finished, test results saved to .npy file at ", save_dir)
+        print(indices)
 
-    QIstr = os.path.join(log_dir, args.model_title + "_" + args.dataset_name + "_log.txt")
-    with open(QIstr, "w", encoding="utf-8") as metrics_file:
-        json.dump(indices, metrics_file, ensure_ascii=False, indent=2)
+        QIstr = os.path.join(log_dir, args.model_title + "_" + args.dataset_name + "_log.txt")
+        with open(QIstr, "w", encoding="utf-8") as metrics_file:
+            json.dump(indices, metrics_file, ensure_ascii=False, indent=2)
+
+    writer.close()
 
 
 def sum_dict(a, b):
