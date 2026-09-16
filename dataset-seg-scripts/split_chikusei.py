@@ -1,8 +1,9 @@
 """
-将原始 Chikusei HSI 默认切成 128 x 128 x 59 的非重叠 patch，并随机划分为训练、验证和测试集。
+将原始 Chikusei HSI 切成 128 x 128 x 59 的重叠 patch，并划分为训练集和验证集。
 
-处理顺序：读取 HSI -> 选择 59 个波段 -> 生成全部 patch -> 随机打乱 ->
-按比例分配到 trains/evals/tests -> 保存 MAT 文件和 manifest。
+处理顺序：读取 HSI -> 选择 59 个波段 -> 以 80 像素步长生成全部 patch ->
+固定随机种子打乱 -> 按原始 0.8:0.1 的相对比例分配到 trains/evals ->
+保存 MAT 文件和 manifest。dataset/tests 保留给 HSRS-SC，本脚本不会修改 tests。
 
 运行命令：
     python3 dataset-seg-scripts/split_chikusei.py
@@ -20,7 +21,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -45,14 +46,14 @@ RAW_SPECTRAL_CHANNELS = 128
 CHIKUSEI_BAND_START = 7
 CHIKUSEI_BAND_END = 66  # Python [7:66] 对应 MATLAB 第 8--66 波段，共 59 个。
 PATCH_SIZE = 128
-STRIDE = 128
-SPLIT_RATIOS = (0.8, 0.1, 0.1)
+STRIDE = 80
+TRAIN_EVAL_WEIGHTS = (0.8, 0.1)
 RANDOM_SEED = 3000
 DROP_INCOMPLETE_EDGE = True
 OVERWRITE = False
 
-SPLIT_NAMES = ("trains", "evals", "tests")
-SPLIT_PREFIXES = {"trains": "train", "evals": "eval", "tests": "test"}
+SPLIT_NAMES = ("trains", "evals")
+SPLIT_PREFIXES = {"trains": "train", "evals": "eval"}
 OUTPUT_CHANNELS = CHIKUSEI_BAND_END - CHIKUSEI_BAND_START
 
 
@@ -113,18 +114,16 @@ def parse_band_axis(value: str) -> Optional[int]:
     return axis
 
 
-def parse_ratios(value: str) -> Tuple[float, float, float]:
-    """解析 trains,evals,tests 比例。"""
+def parse_weights(value: str) -> Tuple[float, float]:
+    """解析 trains,evals 相对权重；权重会归一化后分配全部 patch。"""
 
     try:
-        ratios = tuple(float(item.strip()) for item in value.split(","))
+        weights = tuple(float(item.strip()) for item in value.split(","))
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("ratios 格式示例：0.8,0.1,0.1") from exc
-    if len(ratios) != 3 or any(not math.isfinite(item) or item <= 0 for item in ratios):
-        raise argparse.ArgumentTypeError("ratios 必须包含三个正数")
-    if not math.isclose(sum(ratios), 1.0, rel_tol=0.0, abs_tol=1e-8):
-        raise argparse.ArgumentTypeError("三个比例之和必须为 1")
-    return ratios  # type: ignore[return-value]
+        raise argparse.ArgumentTypeError("ratios 格式示例：0.8,0.1") from exc
+    if len(weights) != 2 or any(not math.isfinite(item) or item <= 0 for item in weights):
+        raise argparse.ArgumentTypeError("ratios 必须包含两个正数")
+    return weights  # type: ignore[return-value]
 
 
 def load_hsi(input_path: Path, mat_key: str, band_axis: Optional[int]) -> Tuple[np.ndarray, List[int]]:
@@ -200,42 +199,26 @@ def build_patches(
                     padded_right=patch_size - (x1 - x0),
                 )
             )
-    if len(patches) < len(SPLIT_NAMES):
-        raise ValueError(f"只生成了 {len(patches)} 个 patch，无法划分三个非空数据集")
+    if not patches:
+        raise ValueError("没有生成任何 patch，请检查输入尺寸、patch-size 和 stride")
     return patches
 
 
-def allocate_counts(total: int, ratios: Sequence[float]) -> List[int]:
-    """按照最大余数法分配数量，并保证三个集合均非空。"""
-
-    raw = np.asarray(ratios, dtype=np.float64) * total
-    counts = np.floor(raw).astype(int)
-    counts = np.maximum(counts, 1)
-
-    while int(counts.sum()) > total:
-        candidates = [i for i, count in enumerate(counts) if count > 1]
-        counts[max(candidates, key=lambda i: counts[i] - raw[i])] -= 1
-    while int(counts.sum()) < total:
-        counts[max(range(len(ratios)), key=lambda i: raw[i] - counts[i])] += 1
-    return [int(count) for count in counts]
-
-
 def split_patches(
-    patches: Sequence[Patch],
-    ratios: Tuple[float, float, float],
+    patches: List[Patch],
+    weights: Tuple[float, float],
     seed: int,
 ) -> Dict[str, List[Patch]]:
-    """随机打乱全部 patch，并按比例分配到三个集合。"""
+    """打乱全部 patch，并按相对权重将其完整分配到训练集和验证集。"""
 
     shuffled = list(patches)
     np.random.default_rng(seed).shuffle(shuffled)
-    train_count, eval_count, _ = allocate_counts(len(shuffled), ratios)
-    train_end = train_count
-    eval_end = train_end + eval_count
+    train_ratio = weights[0] / sum(weights)
+    train_count = int(round(len(shuffled) * train_ratio))
+    train_count = min(max(train_count, 1), len(shuffled) - 1)
     return {
-        "trains": shuffled[:train_end],
-        "evals": shuffled[train_end:eval_end],
-        "tests": shuffled[eval_end:],
+        "trains": shuffled[:train_count],
+        "evals": shuffled[train_count:],
     }
 
 
@@ -257,7 +240,7 @@ def extract_patch(hsi: np.ndarray, info: Patch, patch_size: int) -> np.ndarray:
 
 
 def prepare_output_dirs(output_root: Path, overwrite: bool) -> Dict[str, Path]:
-    """创建输出目录，并防止意外混入旧 MAT 文件。"""
+    """创建训练/验证目录，并防止意外混入旧 Chikusei MAT 文件。"""
 
     output_dirs = {name: output_root / name for name in SPLIT_NAMES}
     old_files = [
@@ -284,23 +267,23 @@ def save_patch(path: Path, patch: np.ndarray) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="切分并随机划分 Chikusei HSI patch")
+    parser = argparse.ArgumentParser(description="将 Chikusei HSI patch 划分到训练集和验证集")
     parser.add_argument("--input", type=Path, default=None, help="原始 MAT 路径")
     parser.add_argument("--output", type=Path, default=None, help="输出根目录")
     parser.add_argument("--mat-key", default=MAT_KEY, help=f"MAT 数据键，默认 {MAT_KEY!r}")
     parser.add_argument("--band-axis", type=parse_band_axis, default=None, help="光谱轴：auto、0、1 或 2")
     parser.add_argument("--patch-size", type=int, default=PATCH_SIZE, help=f"patch 边长，默认 {PATCH_SIZE}")
     parser.add_argument("--stride", type=int, default=STRIDE, help=f"滑窗步长，默认 {STRIDE}")
-    parser.add_argument("--ratios", type=parse_ratios, default=SPLIT_RATIOS, help="训练、验证、测试比例")
+    parser.add_argument("--ratios", type=parse_weights, default=TRAIN_EVAL_WEIGHTS, help="trains、evals 相对比例，默认 0.8,0.1")
     parser.add_argument("--seed", type=int, default=RANDOM_SEED, help=f"随机种子，默认 {RANDOM_SEED}")
     parser.add_argument("--include-edge", action="store_true", default=not DROP_INCOMPLETE_EDGE, help="填充并保留边缘残缺 patch")
-    parser.add_argument("--overwrite", action="store_true", default=OVERWRITE, help="覆盖已有 MAT patch")
+    parser.add_argument("--overwrite", action="store_true", default=OVERWRITE, help="覆盖 trains/evals 中已有 MAT patch")
     parser.add_argument("--dry-run", action="store_true", help="只统计，不写文件")
     return parser
 
 
 def run(args: argparse.Namespace) -> Dict[str, object]:
-    """执行 patch 生成、随机划分和保存。"""
+    """生成全部 Chikusei patch，并将其划分到训练集和验证集。"""
 
     if args.patch_size <= 0 or args.stride <= 0:
         raise ValueError("patch-size 和 stride 必须为正数")
@@ -308,7 +291,6 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         raise ValueError("stride 不能大于 patch-size，否则会遗漏图像内部区域")
     if args.seed < 0:
         raise ValueError("seed 不能为负数")
-
     input_path = args.input or DATASET_PATH
     output_root = args.output or OUTPUT_ROOT
     hsi, raw_shape = load_hsi(input_path, args.mat_key, args.band_axis)
@@ -316,7 +298,6 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
 
     all_patches = build_patches(height, width, args.patch_size, args.stride, args.include_edge)
     split_data = split_patches(all_patches, args.ratios, args.seed)
-    counts = {name: len(split_data[name]) for name in SPLIT_NAMES}
 
     output_dirs = None if args.dry_run else prepare_output_dirs(output_root, args.overwrite)
     samples = []
@@ -329,6 +310,9 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
                 patch = extract_patch(hsi, info, args.patch_size)
                 save_patch(output_dirs[split_name] / filename, patch)
 
+    normalized_ratios = [weight / sum(args.ratios) for weight in args.ratios]
+    counts = {name: len(split_data[name]) for name in SPLIT_NAMES}
+
     manifest = {
         "source": str(input_path.resolve()),
         "mat_key": args.mat_key,
@@ -338,10 +322,12 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         "patch_size": args.patch_size,
         "stride": args.stride,
         "edge_mode": "reflect" if args.include_edge else "drop",
-        "split_strategy": "shuffle_patches_then_split",
-        "ratios": list(args.ratios),
+        "split_strategy": "shuffle_patches_then_train_eval_split",
+        "ratio_weights": list(args.ratios),
+        "normalized_ratios": normalized_ratios,
         "seed": args.seed,
         "patch_counts": counts,
+        "test_dataset": "HSRS-SC (not generated by this script)",
         "samples": samples,
     }
     if output_dirs is not None:
@@ -355,6 +341,7 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
     print(f"输入形状：{tuple(raw_shape)}；输出 HSI：{hsi.shape}；patch 总数：{len(all_patches)}")
     for split_name in SPLIT_NAMES:
         print(f"{split_name}: {counts[split_name]}")
+    print("tests 未修改；tests 保留给 HSRS-SC")
     return manifest
 
 
