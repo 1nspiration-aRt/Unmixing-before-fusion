@@ -1,5 +1,5 @@
 """
-将原始 Chikusei HSI 切成 patch，并随机划分为训练、验证和测试集。
+将原始 Chikusei HSI 默认切成 128 x 128 x 59 的非重叠 patch，并随机划分为训练、验证和测试集。
 
 处理顺序：读取 HSI -> 选择 59 个波段 -> 生成全部 patch -> 随机打乱 ->
 按比例分配到 trains/evals/tests -> 保存 MAT 文件和 manifest。
@@ -44,8 +44,8 @@ MAT_KEY = "Y"
 RAW_SPECTRAL_CHANNELS = 128
 CHIKUSEI_BAND_START = 7
 CHIKUSEI_BAND_END = 66  # Python [7:66] 对应 MATLAB 第 8--66 波段，共 59 个。
-PATCH_SIZE = 256
-STRIDE = 256
+PATCH_SIZE = 128
+STRIDE = 128
 SPLIT_RATIOS = (0.8, 0.1, 0.1)
 RANDOM_SEED = 3000
 DROP_INCOMPLETE_EDGE = True
