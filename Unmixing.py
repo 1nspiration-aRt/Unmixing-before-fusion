@@ -1,3 +1,11 @@
+"""RGB→丰度→HSI 解混训练与推理（Python 3 / PyTorch）。
+
+运行：python Unmixing.py train --hsrs_dir ./dataset/tests
+默认将现有 dataset/trains、dataset/evals 中的 Chikusei 合并用于训练；
+已对齐为59波段的 HSRS 按固定随机种子划分80%验证、20%最终测试。
+每次运行的 training.log 追加全部轮次和测试结果，验证 L1 最低的模型用于测试。
+若 Chikusei 集中在单一目录，可传 --train_dirs /path/to/chikusei。
+"""
 import argparse
 import os
 import time
@@ -7,8 +15,7 @@ import scipy.io as sio
 
 import torch
 from torch.optim import Adam
-from torch.utils.data import DataLoader
-from torchnet import meter
+from torch.utils.data import DataLoader, Subset
 from tensorboardX import SummaryWriter
 
 from unmixingmodel.unmixingAE import UnmixingAE
@@ -16,7 +23,7 @@ from core import utils
 from core.common import *
 from core.loaddata import HSIDataset, RGBDataset
 from core.loss import reconstruction_SADloss,CharbonnierLoss,TVLossEndmembers
-from core.metrics import quality_assessment
+from core.metrics import quality_assessment, compare_sam, compare_mpsnr
 
 # global settings
 resume = False
@@ -85,8 +92,13 @@ def main():
     train_parser.add_argument(
         "--skip_test",
         action="store_true",
-        help="skip loading dataset/tests and the final test; training and validation still run",
+        help="skip final test only; HSRS validation remains required",
     )
+
+    train_parser.add_argument("--train_dirs", nargs="+", default=["./dataset/trains", "./dataset/evals"],
+                              help="Chikusei-only MAT directories, combined for training")
+    train_parser.add_argument("--hsrs_dir", default="./dataset/tests",
+                              help="HSRS-SC MAT directory, spectrally aligned to 59 bands")
 
     infer_parser = subparsers.add_parser("infer", help="parser for inferring arguments")
     infer_parser.add_argument("--cuda", type=int, required=False,default=1,
@@ -118,32 +130,32 @@ def train(args):
     utils.set_random_seed(args.seed)
 
     print('===> Loading datasets')
-    train_path    = './dataset/trains/'
-    eval_path     = './dataset/evals/'
-
+    if args.epochs < 1:
+        raise ValueError("epochs must be positive")
     colors = output_channels(args.dataset_name)
-    train_set = HSIDataset(
-        image_dir=train_path,
-        augment=False,
-        output_channels=colors
-    )
-    eval_set = HSIDataset(
-        image_dir=eval_path,
-        augment=False,
-        output_channels=colors
-    )
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=8, shuffle=True)
-    eval_loader = DataLoader(eval_set, batch_size=args.batch_size, num_workers=4, shuffle=False)
-    test_loader = None
-    if not args.skip_test:
-        test_set = HSIDataset(
-            image_dir='./dataset/tests/',
-            augment=False,
-            output_channels=colors
+    # 合并历史 Chikusei train/eval 切片，不移动或重新生成原始数据。
+    train_set = HSIDataset(args.train_dirs[0], augment=False, output_channels=colors)
+    for directory in args.train_dirs[1:]:
+        train_set.image_files.extend(
+            HSIDataset(directory, augment=False, output_channels=colors).image_files
         )
-        test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
-    else:
-        print("===> Final test disabled; dataset/tests will not be loaded")
+    train_files = [os.path.realpath(path) for path in train_set.image_files]
+    if len(set(train_files)) != len(train_files):
+        raise ValueError("Duplicate Chikusei files in train_dirs")
+    hsrs_set = HSIDataset(args.hsrs_dir, augment=False, output_channels=colors)
+    if set(train_files) & {os.path.realpath(path) for path in hsrs_set.image_files}:
+        raise ValueError("Training and HSRS directories must not overlap")
+    if len(hsrs_set) < 2:
+        raise ValueError("HSRS requires at least two samples for validation/test")
+    # 独立 RNG 保证文件排序与 seed 相同时划分一致，不消费模型初始化 RNG。
+    order = np.random.default_rng(args.seed).permutation(len(hsrs_set)).tolist()
+    n_val = max(1, min(len(order) - 1, int(0.8 * len(order))))
+    val_indices, test_indices = order[:n_val], order[n_val:]
+    eval_set = Subset(hsrs_set, val_indices)
+    test_set = Subset(hsrs_set, test_indices)
+    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=8, shuffle=True)
+    eval_loader = DataLoader(eval_set, batch_size=1, num_workers=4, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
 
     print('===> Building model')
     net = UnmixingAE(
@@ -179,14 +191,29 @@ def train(args):
     print("===> Setting optimizer and logger")
     # add L2 regularization
     optimizer = Adam(net.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    epoch_meter = meter.AverageValueMeter()
     log_dir  = 'experiments/unmixing/'+args.dataset_name + "_"+args.model_title+'_'+str(utils.get_timestamp())
+    # 权重按运行隔离，避免下一次训练覆盖日志所指向的历史轮次。
+    args.save_dir = os.path.join(args.save_dir, os.path.basename(log_dir))
     writer = SummaryWriter(log_dir)
+    log_path = os.path.join(log_dir, "training.log")
+    write_log(log_path, {
+        "event": "configuration", "args": vars(args),
+        "selection_metric": "minimum validation L1",
+        "split": "HSRS sample-level fixed-seed 80/20; scene independence not verified",
+        "train_files": train_files,
+        "validation_files": [hsrs_set.image_files[i] for i in val_indices],
+        "test_files": [hsrs_set.image_files[i] for i in test_indices],
+    })
+    best_loss, best_epoch = float("inf"), None
+    best_name = args.model_title + "_" + args.dataset_name + "_best.pth"
     
     print('===> Start training')
     for e in range(start_epoch, args.epochs):
         adjust_learning_rate(args.learning_rate, optimizer, e+1)
-        epoch_meter.reset()
+        epoch_start = time.perf_counter()
+        totals = dict(total=0.0, charbonnier=0.0, weighted_sad=0.0, weighted_tv=0.0)
+        sample_count = 0
+        net.train()
         print("Start epoch {}, learning rate = {}".format(e + 1, optimizer.param_groups[0]["lr"]))
         for iteration, (gt, rgbdata) in enumerate(train_loader):
             gt = gt.to(device)
@@ -198,7 +225,12 @@ def train(args):
             sad_loss = 0.1 * SADLoss(y,gt)
             tv_endmembers = 0.015 * TVLoss(decoder_weight)
             loss = charb_loss +  sad_loss + tv_endmembers
-            epoch_meter.add(loss.item())
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite training loss at epoch {e + 1}")
+            batch_count = gt.shape[0]
+            sample_count += batch_count
+            for key, value in zip(totals, (loss, charb_loss, sad_loss, tv_endmembers)):
+                totals[key] += value.item() * batch_count
             loss.backward()
             # torch.nn.utils.clip_grad_norm(net.parameters(), clip_para)
             optimizer.step()
@@ -209,24 +241,40 @@ def train(args):
                 n_iter = e * len(train_loader) + iteration + 1
                 writer.add_scalar('scalar/train_loss', loss.item(), n_iter)
 
-        print("===> {}\tEpoch {} Training Complete: Avg. Loss: {:.6f}".format(time.ctime(), e+1, epoch_meter.value()[0]))
-        # run validation set every epoch
-        eval_loss = validate(args, eval_loader, net, L1_loss)
-        # tensorboard visualization
-        writer.add_scalar('scalar/avg_epoch_loss', epoch_meter.value()[0], e + 1)
-        writer.add_scalar('scalar/avg_validation_loss', eval_loss, e + 1)
-        
-        save_checkpoint(args, net, e+1, model_name)
-        # save model weights at checkpoints every 10 epochs
-        if (e + 1) % 1 == 0:
-            model_t = args.model_title + "_" + args.dataset_name +"_epoch_" + str(e+1) + ".pth"
-            save_checkpoint(args, net, e+1, model_t)
+        train_metrics = {key: value / sample_count for key, value in totals.items()}
+        validation = validate(args, eval_loader, net, L1_loss)
+        eval_loss = validation["L1"]
+        if not np.isfinite(eval_loss):
+            raise RuntimeError(f"Non-finite validation L1 at epoch {e + 1}")
+        writer.add_scalar('scalar/avg_epoch_loss', train_metrics["total"], e + 1)
+        for key, value in validation.items():
+            writer.add_scalar('validation/' + key, value, e + 1)
+        save_checkpoint(args, net, e + 1, model_name)
+        model_t = args.model_title + "_" + args.dataset_name + "_epoch_" + str(e + 1) + ".pth"
+        save_checkpoint(args, net, e + 1, model_t)
+        if eval_loss < best_loss:
+            best_loss, best_epoch = eval_loss, e + 1
+            save_checkpoint(args, net, e + 1, best_name)
+        # 一轮完成即追加并关闭文件，已完成轮次不会因后续中断丢失。
+        write_log(log_path, {
+            "event": "epoch", "epoch": e + 1,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+            "train": train_metrics, "validation": validation,
+            "seconds": time.perf_counter() - epoch_start,
+            "checkpoint": os.path.join(args.save_dir, model_t),
+            "best_epoch": best_epoch, "best_validation_L1": best_loss,
+        })
 
+    write_log(log_path, {"event": "best_model", "epoch": best_epoch,
+                         "validation_L1": best_loss,
+                         "checkpoint": os.path.join(args.save_dir, best_name)})
     if args.skip_test:
-        print("===> Training and validation finished; final test skipped")
+        write_log(log_path, {"event": "test_skipped"})
     else:
         # Save the testing results only when an independent test set is available.
-        print('===> Start testing')
+        print('===> Start testing best validation checkpoint')
+        best_checkpoint = torch.load(os.path.join(args.save_dir, best_name), map_location=device)
+        load_model_state(net, best_checkpoint["model"])
         net.to(device).eval()
         with torch.no_grad():
             output = []
@@ -251,9 +299,8 @@ def train(args):
         print("Test finished, test results saved to .npy file at ", save_dir)
         print(indices)
 
-        QIstr = os.path.join(log_dir, args.model_title + "_" + args.dataset_name + "_log.txt")
-        with open(QIstr, "w", encoding="utf-8") as metrics_file:
-            json.dump(indices, metrics_file, ensure_ascii=False, indent=2)
+        write_log(log_path, {"event": "final_test", "epoch": best_epoch,
+                             "samples": test_number, "metrics": indices})
 
     writer.close()
 
@@ -265,30 +312,44 @@ def sum_dict(a, b):
     return temp
 
 def adjust_learning_rate(start_lr, optimizer, epoch):
-    """Sets the learning rate to the initial LR decayed by 10 every 50 epochs"""
+    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
     lr = start_lr * (0.1 ** (epoch // 30))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
 
+def write_log(path, record):
+    """将配置、每轮结果和最终测试追加到同一个可直接阅读的 UTF-8 日志。"""
+    line = json.dumps(record, ensure_ascii=False)
+    with open(path, "a", encoding="utf-8") as stream:
+        stream.write(line + "\n")
+    if record["event"] != "configuration":
+        print(line)
+
+
 def validate(args, loader, model, criterion):
+    """逐样本平均 L1、SAM（度）、MPSNR（dB）；仅 L1 参与最佳轮次选择。
+
+    使用与训练相同的 HSI 归一化和伪 RGB，不裁剪重建值；无梯度更新。
+    """
     device = torch.device("cuda" if args.cuda else "cpu")
-    # switch to evaluate mode
     model.eval()
-    epoch_meter = meter.AverageValueMeter()
-    epoch_meter.reset()
+    totals = dict(L1=0.0, SAM=0.0, MPSNR=0.0)
+    count = 0
     with torch.no_grad():
-        for _, (gt, rgbdata) in enumerate(loader):
-            gt = gt.to(device)
-            rgbdata = rgbdata.to(device)
-            _, y, _ = forward_with_cudnn_fallback(model, rgbdata)
-            loss = criterion(y, gt)
-            epoch_meter.add(loss.item())
-        mesg = "===> {}\tEpoch evaluation Complete: Avg. Loss: {:.6f}".format(time.ctime(), epoch_meter.value()[0])
-        print(mesg)
-    # back to training mode
+        for gt, rgbdata in loader:
+            gt, rgbdata = gt.to(device), rgbdata.to(device)
+            _, prediction, _ = forward_with_cudnn_fallback(model, rgbdata)
+            for target, output in zip(gt, prediction):
+                totals["L1"] += criterion(output, target).item()
+                target = target.cpu().numpy().transpose(1, 2, 0)
+                output = output.cpu().numpy().transpose(1, 2, 0)
+                totals["SAM"] += compare_sam(target, output)
+                totals["MPSNR"] += float(compare_mpsnr(target, output, data_range=1.0))
+                count += 1
     model.train()
-    return epoch_meter.value()[0]
+    return {key: value / count for key, value in totals.items()}
+
 
 def infer(args):
     utils.set_random_seed(args.seed)
