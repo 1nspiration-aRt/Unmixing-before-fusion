@@ -12,7 +12,8 @@ float32，并以 H x W x 3 布局保存到 MAT 变量 ``Y``。
 
 默认不会覆盖已有同名 MAT 文件；确认需要覆盖时添加 ``--overwrite``。
 类别抽样：--input-dir /path/to/AID --classes Farmland Forest --samples-per-class 3
-未指定 --classes 时保留原有单目录全部转换行为。
+全量转换：--input-dir /path/to/AID --all-classes --all-samples --output-dir ./dataset/aid_all
+未指定 --classes 或 --all-classes 时保留原有单目录全部转换行为。
 """
 
 from __future__ import annotations
@@ -127,14 +128,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True, help="MAT 输出目录")
     parser.add_argument("--size", type=int, default=DEFAULT_SIZE, help="输出边长，默认 256")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已有同名 MAT 文件")
-    parser.add_argument("--classes", nargs="+", help="AID 根目录下的类别文件夹名称；指定后启用按类别抽样")
+    class_group = parser.add_mutually_exclusive_group()
+    class_group.add_argument("--classes", nargs="+", help="AID 根目录下的类别文件夹名称")
+    class_group.add_argument("--all-classes", action="store_true", help="读取 AID 根目录下全部类别子目录")
+    parser.add_argument("--all-samples", action="store_true", help="处理所选类别的全部图片，不进行抽样")
     parser.add_argument("--samples-per-class", type=int, default=3, help="每类抽样数量，默认 3")
     parser.add_argument("--seed", type=int, default=3000, help="抽样种子，默认 3000")
     return parser
 
 
 def convert_class_samples(args: argparse.Namespace) -> int:
-    """逐类别无放回抽样，保留原图来源；先检查输出名再写入平铺 MAT。"""
+    """逐类别抽样或全量转换，保留原图来源，输出平铺 MAT。"""
 
     if args.samples_per_class < 1:
         raise ValueError("--samples-per-class 必须为正整数")
@@ -143,11 +147,12 @@ def convert_class_samples(args: argparse.Namespace) -> int:
         if label in {".", ".."} or "/" in label or "\\" in label:
             raise ValueError(f"类别应为根目录下的文件夹名称：{label}")
         files = list_jpg_files(args.input_dir / label)
-        if len(files) < args.samples_per_class:
+        if not args.all_samples and len(files) < args.samples_per_class:
             raise ValueError(f"{label} 只有 {len(files)} 张图片，少于请求数量")
         # 类别独立种子：调整其他类别不会改变本类别的选择结果。
         rng = random.Random(f"{args.seed}:{label}")
-        for source in sorted(rng.sample(files, args.samples_per_class)):
+        chosen = files if args.all_samples else sorted(rng.sample(files, args.samples_per_class))
+        for source in chosen:
             selected.append((label, source, f"{label}__{source.stem}.mat"))
     validate_output_names([Path(name) for _, _, name in selected], args.output_dir, args.overwrite)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -158,6 +163,7 @@ def convert_class_samples(args: argparse.Namespace) -> int:
             "source_relative_path": source.relative_to(args.input_dir).as_posix(),
             "scene_class": label,
             "sampling_seed": args.seed,
+            "selection_mode": "all" if args.all_samples else "sample",
         }, do_compression=True)
         print(f"{source} -> {name}")
     return len(selected)
@@ -169,6 +175,12 @@ def main() -> None:
     args = build_parser().parse_args()
     if args.size <= 0:
         raise ValueError("--size 必须为正整数")
+    if args.all_classes:
+        if not args.input_dir.is_dir():
+            raise FileNotFoundError(f"输入目录不存在：{args.input_dir}")
+        args.classes = sorted(path.name for path in args.input_dir.iterdir() if path.is_dir())
+        if not args.classes:
+            raise ValueError("AID 根目录下没有类别子目录")
 
     if args.classes:
         count = convert_class_samples(args)
