@@ -1,10 +1,10 @@
 """RGB→丰度→HSI 解混训练与推理（Python 3 / PyTorch）。
 
 运行：python Unmixing.py train --hsrs_dir ./dataset/tests
-默认将现有 dataset/trains、dataset/evals 中的 Chikusei 合并用于训练；
+默认读取 dataset/trains 中的全部 Chikusei 样本用于训练；
 已对齐为59波段的 HSRS 按固定随机种子划分80%验证、20%最终测试。
 每次运行的 training.log 追加全部轮次和测试结果，验证 L1 最低的模型用于测试。
-若 Chikusei 集中在单一目录，可传 --train_dirs /path/to/chikusei。
+可传 --train_dirs /path/to/chikusei 和 --hsrs_dir /path/to/hsrs 指定数据目录。
 """
 import argparse
 import os
@@ -95,8 +95,8 @@ def main():
         help="skip final test only; HSRS validation remains required",
     )
 
-    train_parser.add_argument("--train_dirs", nargs="+", default=["./dataset/trains", "./dataset/evals"],
-                              help="Chikusei-only MAT directories, combined for training")
+    train_parser.add_argument("--train_dirs", nargs="+", default=["./dataset/trains"],
+                              help="Chikusei-only MAT directories (default: ./dataset/trains)")
     train_parser.add_argument("--hsrs_dir", default="./dataset/tests",
                               help="HSRS-SC MAT directory, spectrally aligned to 59 bands")
 
@@ -133,7 +133,7 @@ def train(args):
     if args.epochs < 1:
         raise ValueError("epochs must be positive")
     colors = output_channels(args.dataset_name)
-    # 合并历史 Chikusei train/eval 切片，不移动或重新生成原始数据。
+    # 默认只读取 trains；显式指定多个训练目录时合并读取，不移动原始数据。
     train_set = HSIDataset(args.train_dirs[0], augment=False, output_channels=colors)
     for directory in args.train_dirs[1:]:
         train_set.image_files.extend(
