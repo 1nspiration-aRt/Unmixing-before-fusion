@@ -1,5 +1,6 @@
 """
 将一个外部 RGB 类别目录中的 JPG/JPEG 图像转换为 Unmixing 推理所需的 MAT 文件。
+也可对 AID 根目录下指定类别按固定种子抽样，输出“类别__原图名.mat”。
 
 主要处理：BGR 转 RGB、缩放到固定空间尺寸、转换为 [0, 1] 范围的
 float32，并以 H x W x 3 布局保存到 MAT 变量 ``Y``。
@@ -10,11 +11,14 @@ float32，并以 H x W x 3 布局保存到 MAT 变量 ``Y``。
     python dataset-seg-scripts/convert_rgb_jpg_to_mat.py --input-dir "D:\\RGBDataset\\fores" --output-dir ./dataset/train --size 256
 
 默认不会覆盖已有同名 MAT 文件；确认需要覆盖时添加 ``--overwrite``。
+类别抽样：--input-dir /path/to/AID --classes Farmland Forest --samples-per-class 3
+未指定 --classes 时保留原有单目录全部转换行为。
 """
 
 from __future__ import annotations
 
 import argparse
+import random
 from pathlib import Path
 from typing import Iterable
 
@@ -123,7 +127,40 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True, help="MAT 输出目录")
     parser.add_argument("--size", type=int, default=DEFAULT_SIZE, help="输出边长，默认 256")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已有同名 MAT 文件")
+    parser.add_argument("--classes", nargs="+", help="AID 根目录下的类别文件夹名称；指定后启用按类别抽样")
+    parser.add_argument("--samples-per-class", type=int, default=3, help="每类抽样数量，默认 3")
+    parser.add_argument("--seed", type=int, default=3000, help="抽样种子，默认 3000")
     return parser
+
+
+def convert_class_samples(args: argparse.Namespace) -> int:
+    """逐类别无放回抽样，保留原图来源；先检查输出名再写入平铺 MAT。"""
+
+    if args.samples_per_class < 1:
+        raise ValueError("--samples-per-class 必须为正整数")
+    selected = []
+    for label in sorted(set(args.classes)):
+        if label in {".", ".."} or "/" in label or "\\" in label:
+            raise ValueError(f"类别应为根目录下的文件夹名称：{label}")
+        files = list_jpg_files(args.input_dir / label)
+        if len(files) < args.samples_per_class:
+            raise ValueError(f"{label} 只有 {len(files)} 张图片，少于请求数量")
+        # 类别独立种子：调整其他类别不会改变本类别的选择结果。
+        rng = random.Random(f"{args.seed}:{label}")
+        for source in sorted(rng.sample(files, args.samples_per_class)):
+            selected.append((label, source, f"{label}__{source.stem}.mat"))
+    validate_output_names([Path(name) for _, _, name in selected], args.output_dir, args.overwrite)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    for label, source, name in selected:
+        rgb = load_and_convert_image(source, args.size)
+        sio.savemat(str(args.output_dir / name), {
+            MAT_KEY: rgb,
+            "source_relative_path": source.relative_to(args.input_dir).as_posix(),
+            "scene_class": label,
+            "sampling_seed": args.seed,
+        }, do_compression=True)
+        print(f"{source} -> {name}")
+    return len(selected)
 
 
 def main() -> None:
@@ -133,12 +170,15 @@ def main() -> None:
     if args.size <= 0:
         raise ValueError("--size 必须为正整数")
 
-    count = convert_directory(
-        input_dir=args.input_dir,
-        output_dir=args.output_dir,
-        size=args.size,
-        overwrite=args.overwrite,
-    )
+    if args.classes:
+        count = convert_class_samples(args)
+    else:
+        count = convert_directory(
+            input_dir=args.input_dir,
+            output_dir=args.output_dir,
+            size=args.size,
+            overwrite=args.overwrite,
+        )
     print(
         f"转换完成：{count} 个文件；输出形状：{args.size}x{args.size}x3；"
         f"数据类型：float32；MAT 变量名：{MAT_KEY}"

@@ -5,6 +5,9 @@
 已对齐为59波段的 HSRS 按固定随机种子划分80%验证、20%最终测试。
 每次运行的 training.log 追加全部轮次和测试结果，验证 L1 最低的模型用于测试。
 可传 --train_dirs /path/to/chikusei 和 --hsrs_dir /path/to/hsrs 指定数据目录。
+外部 RGB 推理：python Unmixing.py infer --checkpoint /path/to/epoch_40.pth
+    --input_dir ./dataset/aid_check9 --output_dir ./experiments/aid_check9/abundance --n_blocks 3
+输出保留输入 MAT 名称，Abu 为五通道丰度，GT 为预处理后 RGB（非 HSI 真值）。
 """
 import argparse
 import os
@@ -104,7 +107,10 @@ def main():
     infer_parser.add_argument("--cuda", type=int, required=False,default=1,
                              help="set it to 1 for running on GPU, 0 for CPU")
     infer_parser.add_argument("--gpus", type=str, default="0", help="gpu ids (default: 0)")
-    infer_parser.add_argument("--n_blocks", type=int, default=6, help="n_blocks, default set to 6")
+    infer_parser.add_argument("--n_blocks", type=int, default=3, help="must match checkpoint; default 3")
+    infer_parser.add_argument("--checkpoint", type=str, help="explicit checkpoint file; overrides ckpt_dir")
+    infer_parser.add_argument("--input_dir", default="./dataset/train", help="flat RGB MAT directory")
+    infer_parser.add_argument("--output_dir", default="./dataset/inferred_abu", help="abundance MAT output directory")
     infer_parser.add_argument("--ckpt_dir", type=str, default="./experiments/unmixing/ckpts/", help="dataset_name, default set to dataset_name")
     infer_parser.add_argument("--dataset_name", type=str, default="Chikusei", help="dataset_name, default set to dataset_name")
     infer_parser.add_argument("--model_title", type=str, default="UnmixingAE", help="model_title, default set to model_title")
@@ -352,9 +358,12 @@ def validate(args, loader, model, criterion):
 
 
 def infer(args):
+    """使用指定解混权重推断 RGB MAT，保留样本名称并保存未裁剪的模型输出。"""
     utils.set_random_seed(args.seed)
-    inferdata_path  = './dataset/train/'
-    result_path   = './dataset/inferred_abu/'
+    inferdata_path = args.input_dir
+    result_path = args.output_dir
+    if os.path.realpath(inferdata_path) == os.path.realpath(result_path):
+        raise ValueError("Inference input and output directories must differ")
     if not os.path.exists(result_path):
         os.makedirs(result_path)
 
@@ -362,7 +371,7 @@ def infer(args):
     inferdata_set = RGBDataset(image_dir=inferdata_path, augment=False)
     inferdata_loader = DataLoader(inferdata_set, batch_size=1, num_workers=4, shuffle=False)
 
-    model_name = os.path.join(args.ckpt_dir, args.model_title + "_" + args.dataset_name  +'_latest.pth')
+    model_name = args.checkpoint or os.path.join(args.ckpt_dir, args.model_title + "_" + args.dataset_name + '_latest.pth')
     print(model_name)
     device = torch.device("cuda" if args.cuda else "cpu")
     ckpt = torch.load(model_name, map_location=device)["model"]
@@ -382,12 +391,15 @@ def infer(args):
         for i, rgbdata in enumerate(inferdata_loader):
             rgbdata = rgbdata.to(device)
             en_result, y, _ = forward_with_cudnn_fallback(net, rgbdata)
-            en_result = en_result.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
-            rgbdata = rgbdata.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
-            y = y.clamp_(*(0,1)).squeeze().cpu().numpy().transpose(1, 2, 0)
-            filename = str(i).zfill(4)
-            save_dir = os.path.join(result_path, filename + '.mat')
-            sio.savemat(save_dir,{'Abu':en_result, 'GT':rgbdata, 'Y':y})
+            # 保留原始数值，避免 clipping 掩盖重建越界或丰度异常。
+            en_result = en_result.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+            rgbdata = rgbdata.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+            y = y.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+            source_mat = inferdata_set.image_files[i]
+            filename = os.path.basename(source_mat)
+            save_dir = os.path.join(result_path, filename)
+            sio.savemat(save_dir, {'Abu': en_result, 'GT': rgbdata, 'Y': y,
+                                  'source_mat': source_mat, 'checkpoint': model_name})
 
             if i % 100 == 0:
                 print(i)
