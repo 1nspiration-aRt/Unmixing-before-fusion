@@ -4,7 +4,7 @@
 安装：python -m pip install numpy scipy rasterio
 用法（在项目根目录执行，将引号中的路径换成自己的数据集根目录）：
     python dataset-seg-scripts/prepare_hsrs_sc.py --input-dir "D:/Data/HSRS-SC"
-    python dataset-seg-scripts/prepare_hsrs_sc.py --input-dir "/data/HSRS-SC" --output-dir ./dataset/hsrs_sc_tests
+    python dataset-seg-scripts/prepare_hsrs_sc.py --input-dir "E:\Hw9999\BaiduNetdiskDownload\HSI Dataset\HSRS-SC\HSI" --output-dir ./dataset/hsrs_sc_tests
 也可修改下方 INPUT_DIR，随后直接运行本脚本。
 
 输入：递归查找 .tif/.tiff（忽略后缀大小写），要求每幅为 48 波段、256x256。
