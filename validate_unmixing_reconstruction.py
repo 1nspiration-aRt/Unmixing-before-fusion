@@ -26,6 +26,11 @@
     CUDA 可用时可以使用 GPU；本脚本不会执行训练、optimizer.step() 或参数更新。
 
 推荐运行命令：
+    已有推理 MAT 与原始 PNG 对比（无需 checkpoint，不执行推理）：
+    python validate_unmixing_reconstruction.py --original-png image.png --generated-mat result.mat --output-dir comparison
+    此模式额外依赖 OpenCV；MAT 默认读取 Y（H x W x 59），PNG 按转换脚本
+    的插值规则匹配重建尺寸。两图统一按 [0,1] 显示，仅写 PNG 时裁剪越界值。
+
     python validate_unmixing_reconstruction.py --input-dir dataset/tests --checkpoint experiments/unmixing/ckpts/UnmixingAE_Chikusei_latest.pth
     --output-dir "experiments/compare generate hsi/validation_results"  --device auto  --n-blocks 3
 
@@ -353,6 +358,48 @@ def build_rgb_pair(reference_rgb: np.ndarray, reconstructed_rgb: np.ndarray) -> 
     return np.concatenate([reference_rgb, separator, reconstructed_rgb], axis=1)
 
 
+def compare_png_with_generated_mat(args: argparse.Namespace) -> None:
+    """读取已有 HSI 结果，保存原始 RGB、生成伪 RGB 和左右拼图，不运行网络。"""
+    import cv2
+
+    # 与 Unmixing.py infer 的保存契约一致；其他结果可显式指定 MAT 键。
+    mat_data = sio.loadmat(str(args.generated_mat))
+    if args.generated_key not in mat_data:
+        keys = sorted(key for key in mat_data if not key.startswith("__"))
+        raise KeyError(f"MAT 缺少 {args.generated_key!r}，可用键：{keys}")
+    hsi = np.asarray(mat_data[args.generated_key], dtype=np.float32)
+    if hsi.ndim != 3 or hsi.shape[2] != EXPECTED_HSI_CHANNELS:
+        raise ValueError(f"生成 HSI 必须为 H x W x 59，实际为 {hsi.shape}；Abu 是丰度，不能作为 HSI")
+    if not np.isfinite(hsi).all() or min(hsi.shape[:2]) < 1:
+        raise ValueError("生成 HSI 为空或包含 NaN/Inf")
+
+    # 用 imdecode 支持 Windows 中文路径；仅接收本流程的 8 位彩色 PNG。
+    original = cv2.imdecode(np.fromfile(args.original_png, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if original is None:
+        raise ValueError(f"无法读取 PNG：{args.original_png}")
+    if original.dtype != np.uint8 or original.ndim != 3 or original.shape[2] != 3:
+        raise ValueError("原始 PNG 必须是 8 位三通道彩色图像")
+    original = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
+    height, width = hsi.shape[:2]
+    if original.shape[:2] != (height, width):
+        interpolation = cv2.INTER_AREA if original.shape[0] >= height and original.shape[1] >= width else cv2.INTER_CUBIC
+        original = cv2.resize(original, (width, height), interpolation=interpolation)
+
+    # 固定 RGB 顺序和显示尺度，避免分别拉伸两幅图掩盖亮度差异。
+    generated = hsi[:, :, list(CHIKUSEI_RGB_BANDS)]
+    outside_count = int(np.count_nonzero((generated < 0) | (generated > 1)))
+    if outside_count:
+        print(f"提示：伪 RGB 有 {outside_count} 个值超出 [0,1]，仅显示时裁剪，MAT 保持不变。")
+    generated_rgb = np.rint(np.clip(generated, 0, 1) * 255).astype(np.uint8)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    stem = args.generated_mat.stem
+    write_png(args.output_dir / f"{stem}_original_rgb.png", original)
+    write_png(args.output_dir / f"{stem}_reconstructed_rgb.png", generated_rgb)
+    pair_path = args.output_dir / f"{stem}_rgb_pair.png"
+    write_png(pair_path, build_rgb_pair(original, generated_rgb))
+    print(f"对比图（左：原始 PNG；右：重建 HSI 伪 RGB）：{pair_path}")
+
+
 def build_error_map(reference: np.ndarray, reconstructed: np.ndarray) -> np.ndarray:
     """将 59 个波段的绝对误差取均值，生成二维 absolute-error map。"""
 
@@ -595,7 +642,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        required=True,
+        required=False,
         help="已经训练完成的 UnmixingAE checkpoint 路径",
     )
     parser.add_argument(
@@ -658,6 +705,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SIMPLEX_RTOL,
         help=f"abundance 和为 1 的相对容差；默认：{DEFAULT_SIMPLEX_RTOL}",
     )
+    parser.add_argument("--original-png", type=Path, help="已有结果对比模式：原始 8 位 RGB PNG")
+    parser.add_argument("--generated-mat", type=Path, help="已有结果对比模式：生成的 H x W x 59 HSI MAT")
+    parser.add_argument("--generated-key", default="Y", help="生成 HSI 的 MAT 键，默认 Y；验证脚本输出使用 HSI")
     return parser
 
 
@@ -930,7 +980,15 @@ def main() -> None:
 
     parser = build_parser()
     try:
-        run(parser.parse_args())
+        args = parser.parse_args()
+        if args.original_png is not None or args.generated_mat is not None:
+            if args.original_png is None or args.generated_mat is None:
+                raise ValueError("已有结果对比需要同时指定 --original-png 和 --generated-mat")
+            compare_png_with_generated_mat(args)
+        else:
+            if args.checkpoint is None:
+                raise ValueError("HSI 验证模式需要 --checkpoint")
+            run(args)
     except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
         parser.error(str(exc))
 
