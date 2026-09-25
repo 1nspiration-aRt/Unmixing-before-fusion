@@ -25,7 +25,8 @@ from core.loaddata import AbuDataset
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', type=str, default='config/RS_256_abu_DDPM.json',
-                        help='JSON file for configuration')
+                        help='JSON file for co'
+                             'nfiguration')
     parser.add_argument('-p', '--phase', type=str, choices=['train', 'val'],
                         help='Run either train(training) or val(generation)', default='train')
     parser.add_argument('-gpu', '--gpu_ids', type=str, default=None,
@@ -74,7 +75,7 @@ if __name__ == "__main__":
     else:
         wandb_logger = None
 
-    train_path    = './dataset/inferred_abu/'
+    train_path    = './dataset/aid_all_abundance/'
     train_set = AbuDataset(image_dir=train_path, augment=False)
     num_workers = int(opt['train']['num_workers'])
     pin_memory = bool(opt['train']['pin_memory']) and bool(opt['gpu_ids'])
@@ -232,7 +233,7 @@ if __name__ == "__main__":
         os.makedirs(mat_result_path, exist_ok=True)
 
         sample_imgs = []
-        for idx in range(40):
+        for idx in range(5):
             idx += 1
             diffusion.sample(continous=True)
             visuals = diffusion.get_current_visuals(sample=True)

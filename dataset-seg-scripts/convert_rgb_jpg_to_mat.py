@@ -28,7 +28,7 @@ import numpy as np
 import scipy.io as sio
 
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg"}
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 MAT_KEY = "Y"
 DEFAULT_SIZE = 256
 
